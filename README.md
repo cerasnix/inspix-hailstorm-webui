@@ -1,33 +1,66 @@
-# inspix-hailstorm 
+# inspix-hailstorm
 
-All-in-one tool suite aims to analyze/decrypt resources and the master database of Link Like Love Live.
+This is a fork of https://github.com/vertesan/inspix-hailstorm. Thanks to the original author and contributors.
 
+An all-in-one tool suite to analyze/decrypt Link Like Love Live resources and the master database, with a CLI and an experimental WebUI.
 
-## Usage
+For the Chinese version, see `README.zh-CN.md`.
 
-You can choose to build from source on your own or utilize our pre-built docker image to use.
+> Parts of the implementation are referenced from: https://github.com/AllenHeartcore/GkmasObjectManager
 
-### Build
+## Features
 
-Simply run the following code in your terminal to build an executable:
+- Download and decrypt assets and the master database
+- Database structure analysis mode for developers
+- Experimental WebUI for browsing and search
+- Docker workflow support
+
+## Quick Start
+
+You can build from source or run via container.
+
+### Build from Source
 
 ```bash
 go build .
 ```
 
-Once build is completed, run `./hailstorm -h` to get instructions. Here are some hints:
+After building, use `./hailstorm -h` for options. Common flags:
 
-- (without options): Download and decrypt all new assets and database since the last run. Note this operation can take from minutes to hours.
-- `--analyze`: For developers to analyze the structure of the database.
-- `--dbonly`: Ignore asset files, only download and decrypt master database. This operation can take several seconds.
+- No flags: download and decrypt all new assets and DB since the last run
+- `--analyze`: analyze database structure for developers
+- `--dbonly`: database only, skip assets
+- `--web`: start WebUI (default `127.0.0.1:5001`)
 
+### WebUI
+
+Run from project root:
+
+```bash
+go run . --web --addr 127.0.0.1:5001
+```
+
+Or run after build:
+
+```bash
+./hailstorm --web --addr 127.0.0.1:5001
+```
+
+Open in browser: `http://127.0.0.1:5001`.
 
 ### Docker
 
-Get the docker image from https://github.com/vertesan/inspix-hailstorm/pkgs/container/inspix-hailstorm and run `run_docker.sh`.  
-By default the container will be executed in `dbonly` mode, you can overwrite this action by handing over `--entrypoint` to docker CLI if you need to change the default mode.
+Image:
+https://github.com/vertesan/inspix-hailstorm/pkgs/container/inspix-hailstorm
 
+Run `run_docker.sh` to start the container.
+Defaults to `dbonly`; override via docker CLI `--entrypoint` if needed.
+
+## References & Thanks
+
+- https://github.com/vertesan/inspix-hailstorm
+- https://github.com/AllenHeartcore/GkmasObjectManager
 
 ## License
 
-AGPL-3.0 license
+AGPL-3.0
