@@ -1,29 +1,35 @@
 package rich
 
 import (
-  "fmt"
+	"fmt"
 
-  "github.com/fatih/color"
+	"github.com/fatih/color"
 )
 
 func Info(text string, a ...any) {
-  fmt.Println(color.BlueString(">>> [Info]"), fmt.Sprintf(text, a...))
+	msg := fmt.Sprintf(text, a...)
+	emit("info", msg)
+	fmt.Println(color.BlueString(">>> [Info]"), msg)
 }
 
 func Error(text string, a ...any) {
-  fmt.Println(color.RedString(">>> [Error]"), fmt.Sprintf(text, a...))
+	msg := fmt.Sprintf(text, a...)
+	emit("error", msg)
+	fmt.Println(color.RedString(">>> [Error]"), msg)
 }
 
 func Warning(text string, a ...any) {
-  fmt.Println(color.YellowString(">>> [Warning]"), fmt.Sprintf(text, a...))
+	msg := fmt.Sprintf(text, a...)
+	emit("warning", msg)
+	fmt.Println(color.YellowString(">>> [Warning]"), msg)
 }
 
 func Panic(text string, a ...any) {
-  Error(text, a...)
-  panic("Exiting program due to the aforementioned reasons.")
+	Error(text, a...)
+	panic("Exiting program due to the aforementioned reasons.")
 }
 
 func PanicError(text string, err error, a ...any) {
-  Error(text, a...)
-  panic(err)
+	Error(text, a...)
+	panic(err)
 }

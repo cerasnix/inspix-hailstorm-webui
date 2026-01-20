@@ -1,0 +1,547 @@
+package webui
+
+import (
+	"bytes"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html/template"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"vertesan/hailstorm/manifest"
+	"vertesan/hailstorm/master"
+	"vertesan/hailstorm/runner"
+)
+
+//go:embed templates/*.html static
+var webAssets embed.FS
+
+type Server struct {
+	templates *template.Template
+	staticFS  http.FileSystem
+	catalog   *CatalogStore
+	tasks     *TaskManager
+}
+
+func Run(addr string) error {
+	srv, err := NewServer()
+	if err != nil {
+		return err
+	}
+	return http.ListenAndServe(addr, srv.routes())
+}
+
+func NewServer() (*Server, error) {
+	templates, err := template.ParseFS(webAssets, "templates/*.html")
+	if err != nil {
+		return nil, err
+	}
+	static, err := fs.Sub(webAssets, "static")
+	if err != nil {
+		return nil, err
+	}
+	catalog := NewCatalogStore()
+	_ = catalog.Reload()
+
+	return &Server{
+		templates: templates,
+		staticFS:  http.FS(static),
+		catalog:   catalog,
+		tasks:     NewTaskManager(catalog),
+	}, nil
+}
+
+func (s *Server) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(s.staticFS)))
+
+	mux.HandleFunc("/", s.handleHome)
+	mux.HandleFunc("/search", s.handleSearchPage)
+	mux.HandleFunc("/view", s.handleViewPage)
+	mux.HandleFunc("/masterdata", s.handleMasterPage)
+
+	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/search", s.handleSearch)
+	mux.HandleFunc("/api/entry", s.handleEntry)
+	mux.HandleFunc("/api/entry/raw", s.handleEntryRaw)
+	mux.HandleFunc("/api/entry/plain", s.handleEntryPlain)
+	mux.HandleFunc("/api/entry/yaml", s.handleEntryYaml)
+	mux.HandleFunc("/api/masterdata", s.handleMasterList)
+	mux.HandleFunc("/api/masterdata/file", s.handleMasterFile)
+	mux.HandleFunc("/api/tasks", s.handleTasks)
+	mux.HandleFunc("/sse/tasks/", s.handleTaskStream)
+
+	return mux
+}
+
+func (s *Server) render(w http.ResponseWriter, page string, data map[string]any) {
+	if data == nil {
+		data = make(map[string]any)
+	}
+	if _, ok := data["Title"]; !ok {
+		data["Title"] = "Inspix Hailstorm WebUI"
+	}
+
+	var buf bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&buf, page, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data["Content"] = template.HTML(buf.String())
+
+	if err := s.templates.ExecuteTemplate(w, "layout.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		s.render(w, "404.html", map[string]any{
+			"Title": "Not Found",
+		})
+		return
+	}
+	s.render(w, "home.html", nil)
+}
+
+func (s *Server) handleSearchPage(w http.ResponseWriter, r *http.Request) {
+	data := map[string]any{
+		"Query": r.URL.Query().Get("query"),
+	}
+	s.render(w, "search.html", data)
+}
+
+func (s *Server) handleViewPage(w http.ResponseWriter, r *http.Request) {
+	label := r.URL.Query().Get("label")
+	data := map[string]any{
+		"Label": label,
+	}
+	s.render(w, "view.html", data)
+}
+
+func (s *Server) handleMasterPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "masterdata.html", nil)
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	_ = s.catalog.Reload()
+	entries, modTime, loaded := s.catalog.Stats()
+
+	version := ""
+	if bytes, err := os.ReadFile(runner.CatalogVersionFile); err == nil {
+		version = strings.TrimSpace(string(bytes))
+	}
+
+	updated := fileExists(runner.UpdatedFlagFile)
+	plainDirExists := dirExists(runner.DecryptedAssetsSaveDir)
+	assetsDirExists := dirExists(runner.AssetsSaveDir)
+	masterFiles, _ := filepath.Glob(filepath.Join(runner.DbSaveDir, "*.yaml"))
+
+	dbCount := 0
+	if loaded {
+		for _, entry := range entries {
+			if entry.StrTypeCrc == "tsv" {
+				dbCount++
+			}
+		}
+	}
+
+	catalogModified := ""
+	if loaded {
+		catalogModified = modTime.Format(time.RFC3339)
+	}
+
+	resp := map[string]any{
+		"version":         version,
+		"updated":         updated,
+		"catalogLoaded":   loaded,
+		"catalogEntries":  len(entries),
+		"catalogModified": catalogModified,
+		"dbEntries":       dbCount,
+		"plainExists":     plainDirExists,
+		"assetsExists":    assetsDirExists,
+		"masterCount":     len(masterFiles),
+	}
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	_ = s.catalog.Reload()
+	entries := s.catalog.Entries()
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	filtered := filterEntries(entries, query)
+
+	type item struct {
+		Label        string `json:"label"`
+		Name         string `json:"name"`
+		Type         string `json:"type"`
+		Size         uint64 `json:"size"`
+		ResourceType uint32 `json:"resourceType"`
+	}
+
+	resp := make([]item, 0, len(filtered))
+	for _, entry := range filtered {
+		resp = append(resp, item{
+			Label:        entry.StrLabelCrc,
+			Name:         entry.StrLabelCrc,
+			Type:         entry.StrTypeCrc,
+			Size:         entry.Size,
+			ResourceType: entry.ResourceType,
+		})
+	}
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
+	entry, err := s.findEntry(r.URL.Query().Get("label"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	rawPath, rawOK := rawAssetPath(entry)
+	plainPath := plainAssetPath(entry)
+	plainOK := fileExists(plainPath)
+
+	yamlName := ""
+	yamlOK := false
+	if entry.StrTypeCrc == "tsv" {
+		if ins, ok := master.MasterMap[entry.StrLabelCrc]; ok {
+			yamlName = reflectTypeName(ins)
+			yamlPath := filepath.Join(runner.DbSaveDir, yamlName+".yaml")
+			yamlOK = fileExists(yamlPath)
+		}
+	}
+
+	resp := map[string]any{
+		"label":          entry.StrLabelCrc,
+		"realName":       entry.RealName,
+		"type":           entry.StrTypeCrc,
+		"resourceType":   entry.ResourceType,
+		"size":           entry.Size,
+		"checksum":       entry.Checksum,
+		"seed":           entry.Seed,
+		"priority":       entry.Priority,
+		"contentTypes":   entry.StrContentTypeCrcs,
+		"categories":     entry.StrCategoryCrcs,
+		"dependencies":   entry.StrDepCrcs,
+		"rawAvailable":   rawOK,
+		"rawPath":        rawPath,
+		"plainAvailable": plainOK,
+		"plainName":      assetDisplayName(entry),
+		"yamlAvailable":  yamlOK,
+		"yamlName":       yamlName,
+	}
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleEntryRaw(w http.ResponseWriter, r *http.Request) {
+	entry, err := s.findEntry(r.URL.Query().Get("label"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	path, ok := rawAssetPath(entry)
+	if !ok {
+		http.Error(w, "raw asset not found", http.StatusNotFound)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleEntryPlain(w http.ResponseWriter, r *http.Request) {
+	entry, err := s.findEntry(r.URL.Query().Get("label"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	path := plainAssetPath(entry)
+	if !fileExists(path) {
+		http.Error(w, "plain asset not found", http.StatusNotFound)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleEntryYaml(w http.ResponseWriter, r *http.Request) {
+	entry, err := s.findEntry(r.URL.Query().Get("label"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if entry.StrTypeCrc != "tsv" {
+		http.Error(w, "not a database entry", http.StatusBadRequest)
+		return
+	}
+	ins, ok := master.MasterMap[entry.StrLabelCrc]
+	if !ok {
+		http.Error(w, "database mapping not found", http.StatusNotFound)
+		return
+	}
+	name := reflectTypeName(ins)
+	path := filepath.Join(runner.DbSaveDir, name+".yaml")
+	if !fileExists(path) {
+		http.Error(w, "yaml not found", http.StatusNotFound)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleMasterList(w http.ResponseWriter, r *http.Request) {
+	files, err := filepath.Glob(filepath.Join(runner.DbSaveDir, "*.yaml"))
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	type item struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	resp := []item{}
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			continue
+		}
+		resp = append(resp, item{
+			Name: strings.TrimSuffix(filepath.Base(file), ".yaml"),
+			Size: info.Size(),
+		})
+	}
+	sort.Slice(resp, func(i, j int) bool { return resp[i].Name < resp[j].Name })
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleMasterFile(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		http.Error(w, "missing name", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		http.Error(w, "invalid name", http.StatusBadRequest)
+		return
+	}
+	path := filepath.Join(runner.DbSaveDir, name+".yaml")
+	if !fileExists(path) {
+		http.Error(w, "yaml not found", http.StatusNotFound)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		list := s.tasks.List()
+		type item struct {
+			ID        string     `json:"id"`
+			Mode      string     `json:"mode"`
+			Status    TaskStatus `json:"status"`
+			StartedAt string     `json:"startedAt"`
+			EndedAt   string     `json:"endedAt"`
+			Error     string     `json:"error"`
+		}
+		resp := make([]item, 0, len(list))
+		for _, task := range list {
+			ended := ""
+			if !task.EndedAt.IsZero() {
+				ended = task.EndedAt.Format(time.RFC3339)
+			}
+			resp = append(resp, item{
+				ID:        task.ID,
+				Mode:      task.Mode,
+				Status:    task.Status,
+				StartedAt: task.StartedAt.Format(time.RFC3339),
+				EndedAt:   ended,
+				Error:     task.Err,
+			})
+		}
+		writeJSON(w, resp)
+	case http.MethodPost:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Mode          string `json:"mode"`
+			Force         bool   `json:"force"`
+			KeepRaw       bool   `json:"keepRaw"`
+			KeepPath      bool   `json:"keepPath"`
+			ClientVersion string `json:"clientVersion"`
+			ResInfo       string `json:"resInfo"`
+			FilterRegex   string `json:"filterRegex"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		opts := runner.Options{
+			Force:         req.Force,
+			KeepRaw:       req.KeepRaw,
+			KeepPath:      req.KeepPath,
+			ClientVersion: strings.TrimSpace(req.ClientVersion),
+			ResInfo:       strings.TrimSpace(req.ResInfo),
+			FilterRegex:   strings.TrimSpace(req.FilterRegex),
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(req.Mode))
+		switch mode {
+		case "", "update":
+		case "dbonly":
+			opts.DbOnly = true
+		case "convert":
+			opts.Convert = true
+		case "master":
+			opts.Master = true
+		case "analyze":
+			opts.Analyze = true
+		default:
+			http.Error(w, "unknown mode", http.StatusBadRequest)
+			return
+		}
+
+		task, err := s.tasks.Start(modeOrDefault(mode), opts)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, map[string]string{"id": task.ID})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleTaskStream(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/sse/tasks/")
+	task := s.tasks.Get(id)
+	if task == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	for _, entry := range task.Logs() {
+		writeSSE(w, "log", entry)
+	}
+	flusher.Flush()
+
+	ch := task.Subscribe()
+	defer task.Unsubscribe(ch)
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case entry, ok := <-ch:
+			if !ok {
+				return
+			}
+			writeSSE(w, "log", entry)
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) findEntry(label string) (manifest.Entry, error) {
+	if strings.TrimSpace(label) == "" {
+		return manifest.Entry{}, errors.New("missing label")
+	}
+	_ = s.catalog.Reload()
+	entries := s.catalog.Entries()
+	for _, entry := range entries {
+		if entry.StrLabelCrc == label {
+			return entry, nil
+		}
+	}
+	return manifest.Entry{}, errors.New("entry not found")
+}
+
+func filterEntries(entries []manifest.Entry, query string) []manifest.Entry {
+	if query == "" {
+		return entries
+	}
+	tokens := strings.Fields(strings.ToLower(query))
+	if len(tokens) == 0 {
+		return entries
+	}
+
+	out := make([]manifest.Entry, 0, len(entries))
+	for _, entry := range entries {
+		haystack := strings.ToLower(strings.Join([]string{
+			entry.StrLabelCrc,
+			entry.StrTypeCrc,
+			entry.RealName,
+			strings.Join(entry.StrContentTypeCrcs, " "),
+			strings.Join(entry.StrCategoryCrcs, " "),
+			strings.Join(entry.StrContentNameCrcs, " "),
+			strings.Join(entry.StrDepCrcs, " "),
+		}, " "))
+		matched := true
+		for _, token := range tokens {
+			if !strings.Contains(haystack, token) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func modeOrDefault(mode string) string {
+	if mode == "" {
+		return "update"
+	}
+	return mode
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}
+
+func writeSSE(w io.Writer, event string, v any) {
+	payload, _ := json.Marshal(v)
+	if event != "" {
+		fmt.Fprintf(w, "event: %s\n", event)
+	}
+	fmt.Fprintf(w, "data: %s\n\n", payload)
+}
+
+func reflectTypeName(instance any) string {
+	t := fmt.Sprintf("%T", instance)
+	t = strings.TrimPrefix(t, "*")
+	parts := strings.Split(t, ".")
+	return parts[len(parts)-1]
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}

@@ -1,0 +1,14 @@
+{{ define "searchform.html" }}
+<form class="nav-search" action="/search" method="get">
+  <input
+    class="form-control"
+    type="search"
+    name="query"
+    placeholder="Search label, type, or crc"
+    {{ if .Query }}value="{{ .Query }}"{{ end }}
+  />
+  <button class="btn btn-primary" type="submit">
+    <i class="bi bi-search"></i>
+  </button>
+</form>
+{{ end }}

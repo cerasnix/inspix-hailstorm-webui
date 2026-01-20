@@ -1,0 +1,106 @@
+{{ define "view.html" }}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Entry</p>
+    <h1 id="entryTitle" class="page-title">Loading...</h1>
+    <p id="entrySubtitle" class="page-subtitle">Fetching details</p>
+  </div>
+</section>
+
+<section class="panel-grid view-grid">
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2>Metadata</h2>
+    </div>
+    <table class="table table-borderless meta-table">
+      <tbody>
+        <tr>
+          <th>Label</th>
+          <td id="metaLabel">-</td>
+        </tr>
+        <tr>
+          <th>Type</th>
+          <td id="metaType">-</td>
+        </tr>
+        <tr>
+          <th>Resource</th>
+          <td id="metaResource">-</td>
+        </tr>
+        <tr>
+          <th>Size</th>
+          <td id="metaSize">-</td>
+        </tr>
+        <tr>
+          <th>Checksum</th>
+          <td id="metaChecksum">-</td>
+        </tr>
+        <tr>
+          <th>Seed</th>
+          <td id="metaSeed">-</td>
+        </tr>
+        <tr>
+          <th>Priority</th>
+          <td id="metaPriority">-</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2>Files</h2>
+    </div>
+    <div class="file-actions">
+      <a id="downloadRaw" class="btn btn-outline-dark w-100" href="#">
+        Download raw
+      </a>
+      <a id="downloadPlain" class="btn btn-primary w-100" href="#">
+        Download plain
+      </a>
+      <a id="downloadYaml" class="btn btn-outline-dark w-100" href="#">
+        Download YAML
+      </a>
+    </div>
+    <div class="file-meta">
+      <div>
+        <span class="badge">Raw</span>
+        <span id="rawStatus">-</span>
+      </div>
+      <div>
+        <span class="badge">Plain</span>
+        <span id="plainStatus">-</span>
+      </div>
+      <div>
+        <span class="badge">YAML</span>
+        <span id="yamlStatus">-</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel-card">
+  <div class="panel-header">
+    <h2>Dependencies</h2>
+  </div>
+  <div id="depList" class="pill-grid">No dependencies.</div>
+</section>
+
+<section class="panel-card">
+  <div class="panel-header">
+    <h2>Content types</h2>
+  </div>
+  <div id="contentList" class="pill-grid">None.</div>
+</section>
+
+<section class="panel-card">
+  <div class="panel-header">
+    <h2>Categories</h2>
+  </div>
+  <div id="categoryList" class="pill-grid">None.</div>
+</section>
+
+<script>
+  const entryLabel = "{{ .Label }}";
+</script>
+<script src="/static/js/view.js" defer></script>
+{{ end }}

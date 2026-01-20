@@ -22,6 +22,7 @@ go.work
 
 __pycache__/
 cache/
+GkmasObjectManager/
 *.exe
 masterdata/
 masterdataYaml/

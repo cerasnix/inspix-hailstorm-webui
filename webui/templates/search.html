@@ -1,0 +1,41 @@
+{{ define "search.html" }}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Catalog</p>
+    <h1 class="page-title">Search results</h1>
+    <p id="searchSummary" class="page-subtitle">Loading catalog...</p>
+  </div>
+  <div class="controls-row">
+    <div class="control-group">
+      <label>Sort</label>
+      <select id="sortBy" class="form-select">
+        <option value="label">Label</option>
+        <option value="size">Size</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Order</label>
+      <select id="sortDir" class="form-select">
+        <option value="asc">Ascending</option>
+        <option value="desc">Descending</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Per page</label>
+      <select id="entriesPerPage" class="form-select">
+        <option>12</option>
+        <option>24</option>
+        <option>48</option>
+      </select>
+    </div>
+  </div>
+</section>
+
+<div id="searchResults" class="result-grid"></div>
+<div id="pagination" class="pagination-shell"></div>
+
+<script>
+  const initialQuery = "{{ .Query }}";
+</script>
+<script src="/static/js/search.js" defer></script>
+{{ end }}

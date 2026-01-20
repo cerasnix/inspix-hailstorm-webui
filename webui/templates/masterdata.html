@@ -1,0 +1,36 @@
+{{ define "masterdata.html" }}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Masterdata</p>
+    <h1 class="page-title">Parsed YAML library</h1>
+    <p class="page-subtitle">Browse generated YAML files from masterdata.</p>
+  </div>
+  <div class="controls-row">
+    <div class="control-group">
+      <label>Filter</label>
+      <input id="masterFilter" class="form-control" type="text" />
+    </div>
+  </div>
+</section>
+
+<section class="panel-grid master-grid">
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2>Files</h2>
+      <span id="masterCount" class="badge badge-dark">0</span>
+    </div>
+    <div id="masterList" class="list-shell">Loading files...</div>
+  </div>
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2>Preview</h2>
+      <a id="masterDownload" class="btn btn-outline-dark btn-sm" href="#">
+        Download
+      </a>
+    </div>
+    <pre id="masterPreview" class="log-shell">Select a file.</pre>
+  </div>
+</section>
+
+<script src="/static/js/masterdata.js" defer></script>
+{{ end }}

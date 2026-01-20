@@ -1,0 +1,122 @@
+{{ define "home.html" }}
+<section class="hero-grid">
+  <div class="hero-copy">
+    <p class="eyebrow">Manifest cockpit</p>
+    <h1 class="hero-title">Pull, decrypt, parse. All in one place.</h1>
+    <p class="hero-subtitle">
+      Launch updates, conversions, and masterdata builds without leaving the
+      browser. Everything runs on your local cache.
+    </p>
+    <div class="hero-actions">
+      {{ template "searchform.html" . }}
+      <a class="btn btn-outline-dark" href="/search">Browse catalog</a>
+    </div>
+  </div>
+  <div class="hero-panel">
+    <div class="panel-header">
+      <span>Status</span>
+      <span id="statusUpdated" class="badge">Idle</span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <span class="stat-label">Version</span>
+        <span id="statusVersion" class="stat-value">-</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Catalog</span>
+        <span id="statusCatalog" class="stat-value">-</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">DB Entries</span>
+        <span id="statusDb" class="stat-value">-</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Plain Cache</span>
+        <span id="statusPlain" class="stat-value">-</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Raw Cache</span>
+        <span id="statusAssets" class="stat-value">-</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Masterdata</span>
+        <span id="statusMaster" class="stat-value">-</span>
+      </div>
+    </div>
+    <div class="panel-foot">
+      <span id="statusModified">Catalog not loaded.</span>
+    </div>
+  </div>
+</section>
+
+<section class="panel-grid">
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2>Run a task</h2>
+      <span class="badge badge-dark">Queue</span>
+    </div>
+    <form id="taskForm" class="task-form">
+      <label class="form-label">Mode</label>
+      <select id="taskMode" class="form-select">
+        <option value="update">Update (download + parse)</option>
+        <option value="dbonly">Update DB only</option>
+        <option value="convert">Convert (decrypt existing)</option>
+        <option value="master">Masterdata (parse existing)</option>
+        <option value="analyze">Analyze only</option>
+      </select>
+
+      <div class="form-row">
+        <div>
+          <label class="form-label">Client Version</label>
+          <input id="taskClientVersion" class="form-control" type="text" />
+        </div>
+        <div>
+          <label class="form-label">Resource Info</label>
+          <input id="taskResInfo" class="form-control" type="text" />
+        </div>
+      </div>
+
+      <label class="form-label">Filter Regex</label>
+      <input id="taskFilterRegex" class="form-control" type="text" />
+
+      <div class="checkbox-grid">
+        <label class="form-check">
+          <input id="taskForce" class="form-check-input" type="checkbox" />
+          <span class="form-check-label">Force update</span>
+        </label>
+        <label class="form-check">
+          <input id="taskKeepRaw" class="form-check-input" type="checkbox" />
+          <span class="form-check-label">Keep raw cache</span>
+        </label>
+        <label class="form-check">
+          <input id="taskKeepPath" class="form-check-input" type="checkbox" />
+          <span class="form-check-label">Keep download path</span>
+        </label>
+      </div>
+
+      <button class="btn btn-primary w-100" type="submit">
+        Start task
+      </button>
+    </form>
+  </div>
+
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2>Task log</h2>
+      <button id="taskClear" class="btn btn-outline-dark btn-sm">
+        Clear
+      </button>
+    </div>
+    <pre id="taskLog" class="log-shell">No task started.</pre>
+  </div>
+</section>
+
+<section class="panel-card">
+  <div class="panel-header">
+    <h2>Recent tasks</h2>
+  </div>
+  <div id="taskHistory" class="task-history">No tasks yet.</div>
+</section>
+
+<script src="/static/js/home.js" defer></script>
+{{ end }}
