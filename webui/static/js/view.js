@@ -35,13 +35,17 @@ function renderPreview(preview, label) {
   }
   container.innerHTML = "";
   if (!preview || !preview.available) {
-    container.textContent = "Preview not available.";
+    if (preview && preview.exportable) {
+      container.textContent = I18n.t("view.previewNotGenerated");
+    } else {
+      container.textContent = I18n.t("view.previewNotAvailable");
+    }
     return;
   }
   if (preview.source && preview.source !== "plain") {
     const note = document.createElement("div");
     note.className = "preview-note";
-    note.textContent = "Derived preview";
+    note.textContent = I18n.t("view.derivedPreview");
     container.appendChild(note);
   }
   const url = `/api/entry/preview?label=${encodeURIComponent(label)}`;
@@ -53,6 +57,27 @@ function renderPreview(preview, label) {
     return;
   }
   if (preview.kind === "audio") {
+    if (preview.items && preview.items.length > 0) {
+      preview.items.forEach((item, index) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "preview-audio-item";
+        const label = document.createElement("div");
+        label.className = "preview-audio-label";
+        label.textContent = I18n.t("view.trackLabel", { index: index + 1 });
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        const source = document.createElement("source");
+        source.src = `${url}&item=${encodeURIComponent(item.id)}`;
+        if (item.type) {
+          source.type = item.type;
+        }
+        audio.appendChild(source);
+        wrapper.appendChild(label);
+        wrapper.appendChild(audio);
+        container.appendChild(wrapper);
+      });
+      return;
+    }
     const audio = document.createElement("audio");
     audio.controls = true;
     const source = document.createElement("source");
@@ -87,7 +112,51 @@ function renderPreview(preview, label) {
     container.appendChild(viewer);
     return;
   }
-  container.textContent = "Preview not supported.";
+  container.textContent = I18n.t("view.previewNotSupported");
+}
+
+function renderPreviewActions(preview, label) {
+  const button = document.getElementById("previewExportBtn");
+  const hint = document.getElementById("previewExportHint");
+  if (!button || !hint) {
+    return;
+  }
+
+  if (!preview || !preview.exportable) {
+    button.classList.add("d-none");
+    if (preview && preview.outputDir) {
+      hint.textContent = I18n.t("view.exportNotConfigured", {
+        path: preview.outputDir,
+      });
+    } else {
+      hint.textContent = "";
+    }
+    return;
+  }
+
+  button.classList.remove("d-none");
+  button.disabled = false;
+  button.textContent = I18n.t("view.exportPreview");
+  hint.textContent = preview.outputDir
+    ? I18n.t("view.outputDir", { path: preview.outputDir })
+    : "";
+
+  button.onclick = async () => {
+    button.disabled = true;
+    button.textContent = "Exporting...";
+    try {
+      const res = await fetch(
+        `/api/entry/preview/export?label=${encodeURIComponent(label)}`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        throw new Error("export failed");
+      }
+    } catch (err) {
+      hint.textContent = I18n.t("view.exportFailed");
+    }
+    await loadEntry();
+  };
 }
 
 async function loadEntry() {
@@ -112,14 +181,14 @@ async function loadEntry() {
   document.getElementById("metaPriority").textContent = data.priority;
 
   document.getElementById("rawStatus").textContent = data.rawAvailable
-    ? "Available"
-    : "Missing";
+    ? I18n.t("view.available")
+    : I18n.t("view.missing");
   document.getElementById("plainStatus").textContent = data.plainAvailable
-    ? "Available"
-    : "Missing";
+    ? I18n.t("view.available")
+    : I18n.t("view.missing");
   document.getElementById("yamlStatus").textContent = data.yamlAvailable
-    ? "Available"
-    : "Missing";
+    ? I18n.t("view.available")
+    : I18n.t("view.missing");
 
   setLinkState(
     document.getElementById("downloadRaw"),
@@ -141,11 +210,12 @@ async function loadEntry() {
   renderPills(document.getElementById("contentList"), data.contentTypes);
   renderPills(document.getElementById("categoryList"), data.categories);
   renderPreview(data.preview, label);
+  renderPreviewActions(data.preview, label);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   loadEntry().catch(() => {
     document.getElementById("entrySubtitle").textContent =
-      "Failed to load entry.";
+      I18n.t("view.failedLoad");
   });
 });

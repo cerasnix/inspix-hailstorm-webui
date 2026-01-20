@@ -5,8 +5,10 @@
     type="search"
     name="query"
     placeholder="Search label, type, or crc"
+    data-i18n-placeholder="nav.searchPlaceholder"
     {{ if .Query }}value="{{ .Query }}"{{ end }}
   />
+  <input type="hidden" name="lang" class="lang-input" />
   <button class="btn btn-primary" type="submit">
     <i class="bi bi-search"></i>
   </button>

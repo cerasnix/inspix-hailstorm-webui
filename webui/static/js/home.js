@@ -7,10 +7,10 @@ function setStatusBadge(updated) {
   }
   badge.classList.remove("badge", "badge-dark");
   if (updated) {
-    badge.textContent = "Updated";
+    badge.textContent = I18n.t("home.statusUpdated");
     badge.classList.add("badge");
   } else {
-    badge.textContent = "Idle";
+    badge.textContent = I18n.t("home.statusIdle");
     badge.classList.add("badge-dark");
   }
 }
@@ -27,21 +27,22 @@ async function loadStatus() {
       data.dbEntries
     );
     document.getElementById("statusPlain").textContent = data.plainExists
-      ? "Ready"
-      : "Missing";
+      ? I18n.t("home.statusReady")
+      : I18n.t("home.statusMissing");
     document.getElementById("statusAssets").textContent = data.assetsExists
-      ? "Ready"
-      : "Missing";
+      ? I18n.t("home.statusReady")
+      : I18n.t("home.statusMissing");
     document.getElementById("statusMaster").textContent = App.formatNumber(
       data.masterCount
     );
     document.getElementById("statusModified").textContent = data.catalogLoaded
-      ? `Catalog updated ${data.catalogModified}`
-      : "Catalog not loaded.";
+      ? I18n.t("home.statusCatalogUpdated", { time: data.catalogModified })
+      : I18n.t("home.statusCatalogMissing");
     setStatusBadge(data.updated);
   } catch (err) {
-    document.getElementById("statusModified").textContent =
-      "Failed to load status.";
+    document.getElementById("statusModified").textContent = I18n.t(
+      "home.statusFailed"
+    );
   }
 }
 
@@ -50,7 +51,7 @@ function appendLog(line) {
   if (!log) {
     return;
   }
-  if (log.textContent === "No task started.") {
+  if (log.textContent === I18n.t("home.noTaskStarted")) {
     log.textContent = "";
   }
   log.textContent += `${line}\n`;
@@ -82,7 +83,7 @@ function renderTaskHistory(tasks) {
     return;
   }
   if (!tasks.length) {
-    container.textContent = "No tasks yet.";
+    container.textContent = I18n.t("home.noTasks");
     return;
   }
   container.innerHTML = "";
@@ -125,6 +126,7 @@ function updateModeState() {
   document.getElementById("taskClientVersion").disabled = disableFields;
   document.getElementById("taskResInfo").disabled = disableFields;
   document.getElementById("taskFilterRegex").disabled = disableFields;
+  renderTaskModeDesc(mode);
 }
 
 function setupTaskForm() {
@@ -159,7 +161,7 @@ function setupTaskForm() {
     clearBtn.addEventListener("click", () => {
       const log = document.getElementById("taskLog");
       if (log) {
-        log.textContent = "No task started.";
+        log.textContent = I18n.t("home.noTaskStarted");
       }
     });
   }
@@ -169,5 +171,51 @@ document.addEventListener("DOMContentLoaded", () => {
   loadStatus();
   loadTasks();
   setupTaskForm();
+  const filtersReady =
+    window.FilterUtils && FilterUtils.loadConfig
+      ? FilterUtils.loadConfig()
+      : Promise.resolve();
+  filtersReady.then(renderQuickFilters);
   setInterval(loadStatus, 15000);
 });
+
+function renderQuickFilters() {
+  if (!window.FilterConfig) {
+    return;
+  }
+  const mediaContainer = document.getElementById("quickMediaFilters");
+  const characterContainer = document.getElementById("quickCharacterFilters");
+  buildFilterLinks(mediaContainer, FilterConfig.media, "media");
+  buildFilterLinks(characterContainer, FilterConfig.characters, "character");
+}
+
+function buildFilterLinks(container, filters, param) {
+  if (!container || !filters) {
+    return;
+  }
+  container.innerHTML = "";
+  filters.forEach((filter) => {
+    const link = document.createElement("a");
+    link.className = "filter-chip";
+    link.textContent = filter.labelKey ? I18n.t(filter.labelKey) : filter.label;
+    link.href = I18n.withLang(
+      `/search?${param}=${encodeURIComponent(filter.key)}`
+    );
+    container.appendChild(link);
+  });
+}
+
+function renderTaskModeDesc(mode) {
+  const desc = document.getElementById("taskModeDesc");
+  if (!desc) {
+    return;
+  }
+  const keyMap = {
+    update: "home.taskDesc.update",
+    dbonly: "home.taskDesc.dbonly",
+    convert: "home.taskDesc.convert",
+    master: "home.taskDesc.master",
+    analyze: "home.taskDesc.analyze",
+  };
+  desc.textContent = I18n.t(keyMap[mode] || keyMap.update);
+}

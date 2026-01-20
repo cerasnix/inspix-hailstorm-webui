@@ -1,13 +1,15 @@
 {{ define "masterdata.html" }}
 <section class="page-head">
   <div>
-    <p class="eyebrow">Masterdata</p>
-    <h1 class="page-title">Parsed YAML library</h1>
-    <p class="page-subtitle">Browse generated YAML files from masterdata.</p>
+    <p class="eyebrow" data-i18n="master.eyebrow">Masterdata</p>
+    <h1 class="page-title" data-i18n="master.title">Parsed YAML library</h1>
+    <p class="page-subtitle" data-i18n="master.subtitle">
+      Browse generated YAML files from masterdata.
+    </p>
   </div>
   <div class="controls-row">
     <div class="control-group">
-      <label>Filter</label>
+      <label data-i18n="master.filter">Filter</label>
       <input id="masterFilter" class="form-control" type="text" />
     </div>
   </div>
@@ -16,19 +18,27 @@
 <section class="panel-grid master-grid">
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Files</h2>
+      <h2 data-i18n="master.files">Files</h2>
       <span id="masterCount" class="badge badge-dark">0</span>
     </div>
-    <div id="masterList" class="list-shell">Loading files...</div>
+    <div id="masterList" class="list-shell" data-i18n="master.loading">
+      Loading files...
+    </div>
   </div>
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Preview</h2>
-      <a id="masterDownload" class="btn btn-outline-dark btn-sm" href="#">
+      <h2 data-i18n="master.preview">Preview</h2>
+      <a
+        id="masterDownload"
+        class="btn btn-outline-dark btn-sm"
+        href="#"
+        data-i18n="master.download"
+      >
         Download
       </a>
     </div>
-    <pre id="masterPreview" class="log-shell">Select a file.</pre>
+    <pre id="masterPreview" class="log-shell" data-i18n="master.selectFile">
+Select a file.</pre>
   </div>
 </section>
 

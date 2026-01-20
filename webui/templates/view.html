@@ -1,7 +1,7 @@
 {{ define "view.html" }}
 <section class="page-head">
   <div>
-    <p class="eyebrow">Entry</p>
+    <p class="eyebrow" data-i18n="view.eyebrow">Entry</p>
     <h1 id="entryTitle" class="page-title">Loading...</h1>
     <p id="entrySubtitle" class="page-subtitle">Fetching details</p>
   </div>
@@ -10,36 +10,36 @@
 <section class="panel-grid view-grid">
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Metadata</h2>
+      <h2 data-i18n="view.metadata">Metadata</h2>
     </div>
     <table class="table table-borderless meta-table">
       <tbody>
         <tr>
-          <th>Label</th>
+          <th data-i18n="view.label">Label</th>
           <td id="metaLabel">-</td>
         </tr>
         <tr>
-          <th>Type</th>
+          <th data-i18n="search.field.type">Type</th>
           <td id="metaType">-</td>
         </tr>
         <tr>
-          <th>Resource</th>
+          <th data-i18n="view.resource">Resource</th>
           <td id="metaResource">-</td>
         </tr>
         <tr>
-          <th>Size</th>
+          <th data-i18n="view.size">Size</th>
           <td id="metaSize">-</td>
         </tr>
         <tr>
-          <th>Checksum</th>
+          <th data-i18n="view.checksum">Checksum</th>
           <td id="metaChecksum">-</td>
         </tr>
         <tr>
-          <th>Seed</th>
+          <th data-i18n="view.seed">Seed</th>
           <td id="metaSeed">-</td>
         </tr>
         <tr>
-          <th>Priority</th>
+          <th data-i18n="view.priority">Priority</th>
           <td id="metaPriority">-</td>
         </tr>
       </tbody>
@@ -48,60 +48,85 @@
 
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Files</h2>
+      <h2 data-i18n="view.files">Files</h2>
     </div>
     <div class="file-actions">
-      <a id="downloadRaw" class="btn btn-outline-dark w-100" href="#">
+      <a
+        id="downloadRaw"
+        class="btn btn-outline-dark w-100"
+        href="#"
+        data-i18n="view.downloadRaw"
+      >
         Download raw
       </a>
-      <a id="downloadPlain" class="btn btn-primary w-100" href="#">
+      <a
+        id="downloadPlain"
+        class="btn btn-primary w-100"
+        href="#"
+        data-i18n="view.downloadPlain"
+      >
         Download plain
       </a>
-      <a id="downloadYaml" class="btn btn-outline-dark w-100" href="#">
+      <a
+        id="downloadYaml"
+        class="btn btn-outline-dark w-100"
+        href="#"
+        data-i18n="view.downloadYaml"
+      >
         Download YAML
       </a>
     </div>
-    <div class="file-meta">
-      <div>
-        <span class="badge">Raw</span>
-        <span id="rawStatus">-</span>
+      <div class="file-meta">
+        <div>
+          <span class="badge" data-i18n="view.raw">Raw</span>
+          <span id="rawStatus">-</span>
+        </div>
+        <div>
+          <span class="badge" data-i18n="view.plain">Plain</span>
+          <span id="plainStatus">-</span>
+        </div>
+        <div>
+          <span class="badge" data-i18n="view.yaml">YAML</span>
+          <span id="yamlStatus">-</span>
+        </div>
       </div>
-      <div>
-        <span class="badge">Plain</span>
-        <span id="plainStatus">-</span>
-      </div>
-      <div>
-        <span class="badge">YAML</span>
-        <span id="yamlStatus">-</span>
-      </div>
-    </div>
   </div>
 
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Preview</h2>
+      <h2 data-i18n="view.preview">Preview</h2>
     </div>
     <div id="previewContainer" class="preview-shell">No preview.</div>
+    <div class="preview-actions">
+      <button
+        id="previewExportBtn"
+        class="btn btn-outline-dark"
+        data-i18n="view.exportPreview"
+      >
+        Export & Preview
+      </button>
+      <div id="previewExportHint" class="text-muted"></div>
+    </div>
   </div>
 </section>
 
 <section class="panel-card">
   <div class="panel-header">
-    <h2>Dependencies</h2>
+    <h2 data-i18n="view.dependencies">Dependencies</h2>
   </div>
   <div id="depList" class="pill-grid">No dependencies.</div>
 </section>
 
 <section class="panel-card">
   <div class="panel-header">
-    <h2>Content types</h2>
+    <h2 data-i18n="view.contentTypes">Content types</h2>
   </div>
   <div id="contentList" class="pill-grid">None.</div>
 </section>
 
 <section class="panel-card">
   <div class="panel-header">
-    <h2>Categories</h2>
+    <h2 data-i18n="view.categories">Categories</h2>
   </div>
   <div id="categoryList" class="pill-grid">None.</div>
 </section>

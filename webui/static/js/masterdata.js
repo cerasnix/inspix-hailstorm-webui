@@ -11,7 +11,7 @@ function renderList() {
   document.getElementById("masterCount").textContent = filtered.length;
 
   if (!filtered.length) {
-    list.textContent = "No files found.";
+    list.textContent = I18n.t("master.noFiles");
     return;
   }
 
@@ -30,10 +30,10 @@ function renderList() {
 async function selectFile(name) {
   activeName = name;
   const preview = document.getElementById("masterPreview");
-  preview.textContent = "Loading...";
+  preview.textContent = I18n.t("master.loading");
   const data = await fetch(`/api/masterdata/file?name=${encodeURIComponent(name)}`);
   if (!data.ok) {
-    preview.textContent = "Failed to load file.";
+    preview.textContent = I18n.t("master.failedLoad");
     return;
   }
   preview.textContent = await data.text();
@@ -51,7 +51,7 @@ async function loadMasterList() {
     renderList();
   } catch (err) {
     document.getElementById("masterList").textContent =
-      "Failed to load masterdata.";
+      I18n.t("master.failedList");
   }
 }
 

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"vertesan/hailstorm/manifest"
@@ -29,6 +30,10 @@ type Server struct {
 	staticFS  http.FileSystem
 	catalog   *CatalogStore
 	tasks     *TaskManager
+	filtersMu sync.Mutex
+	filters   AutoFilters
+	filterMod time.Time
+	filtersOK bool
 }
 
 func Run(addr string) error {
@@ -69,9 +74,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/masterdata", s.handleMasterPage)
 
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/filters", s.handleFilters)
 	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/entry", s.handleEntry)
 	mux.HandleFunc("/api/entry/preview", s.handleEntryPreview)
+	mux.HandleFunc("/api/entry/preview/export", s.handleEntryPreviewExport)
 	mux.HandleFunc("/api/entry/raw", s.handleEntryRaw)
 	mux.HandleFunc("/api/entry/plain", s.handleEntryPlain)
 	mux.HandleFunc("/api/entry/yaml", s.handleEntryYaml)
@@ -178,7 +185,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_ = s.catalog.Reload()
 	entries := s.catalog.Entries()
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
-	filtered := filterEntries(entries, query)
+	field := strings.TrimSpace(r.URL.Query().Get("field"))
+	filtered := filterEntries(entries, query, field)
 
 	type item struct {
 		Label        string `json:"label"`
@@ -186,6 +194,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Type         string `json:"type"`
 		Size         uint64 `json:"size"`
 		ResourceType uint32 `json:"resourceType"`
+		RealName     string `json:"realName"`
 	}
 
 	resp := make([]item, 0, len(filtered))
@@ -196,6 +205,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			Type:         entry.StrTypeCrc,
 			Size:         entry.Size,
 			ResourceType: entry.ResourceType,
+			RealName:     entry.RealName,
 		})
 	}
 	writeJSON(w, resp)
@@ -245,10 +255,13 @@ func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
 		"yamlAvailable":  yamlOK,
 		"yamlName":       yamlName,
 		"preview": map[string]any{
-			"available": preview.Available,
-			"kind":      preview.Kind,
-			"type":      preview.ContentType,
-			"source":    preview.Source,
+			"available":  preview.Available,
+			"kind":       preview.Kind,
+			"type":       preview.ContentType,
+			"source":     preview.Source,
+			"exportable": preview.Exportable,
+			"outputDir":  preview.OutputDir,
+			"items":      previewItems(preview),
 		},
 	}
 	writeJSON(w, resp)
@@ -270,8 +283,72 @@ func (s *Server) handleEntryPreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "preview not supported", http.StatusUnsupportedMediaType)
 		return
 	}
+	itemID := strings.TrimSpace(r.URL.Query().Get("item"))
+	if itemID != "" {
+		if item, ok := findPreviewItem(preview, itemID); ok {
+			w.Header().Set("Content-Type", item.ContentType)
+			http.ServeFile(w, r, item.Path)
+			return
+		}
+		http.Error(w, "preview item not found", http.StatusNotFound)
+		return
+	}
+	if preview.Path == "" && len(preview.Items) > 0 {
+		w.Header().Set("Content-Type", preview.Items[0].ContentType)
+		http.ServeFile(w, r, preview.Items[0].Path)
+		return
+	}
 	w.Header().Set("Content-Type", preview.ContentType)
 	http.ServeFile(w, r, preview.Path)
+}
+
+func (s *Server) handleEntryPreviewExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	entry, err := s.findEntry(r.URL.Query().Get("label"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	path := plainAssetPath(entry)
+	if !fileExists(path) {
+		http.Error(w, "plain asset not found", http.StatusNotFound)
+		return
+	}
+
+	force := r.URL.Query().Get("force") == "1"
+	var preview PreviewInfo
+	switch {
+	case isAssetBundle(entry.StrLabelCrc, entry.ResourceType):
+		preview = ensureAssetBundlePreview(entry.StrLabelCrc, path, force)
+	case isAcb(entry.StrLabelCrc):
+		preview = ensureAcbPreview(entry.StrLabelCrc, path)
+	default:
+		http.Error(w, "preview export not supported", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	if !preview.Exportable {
+		http.Error(w, "preview export not configured", http.StatusConflict)
+		return
+	}
+
+	resp := map[string]any{
+		"ok": true,
+		"preview": map[string]any{
+			"available":  preview.Available,
+			"kind":       preview.Kind,
+			"type":       preview.ContentType,
+			"source":     preview.Source,
+			"exportable": preview.Exportable,
+			"outputDir":  preview.OutputDir,
+			"items":      previewItems(preview),
+		},
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleEntryRaw(w http.ResponseWriter, r *http.Request) {
@@ -506,7 +583,7 @@ func (s *Server) findEntry(label string) (manifest.Entry, error) {
 	return manifest.Entry{}, errors.New("entry not found")
 }
 
-func filterEntries(entries []manifest.Entry, query string) []manifest.Entry {
+func filterEntries(entries []manifest.Entry, query string, field string) []manifest.Entry {
 	if query == "" {
 		return entries
 	}
@@ -514,18 +591,49 @@ func filterEntries(entries []manifest.Entry, query string) []manifest.Entry {
 	if len(tokens) == 0 {
 		return entries
 	}
+	field = strings.ToLower(strings.TrimSpace(field))
 
 	out := make([]manifest.Entry, 0, len(entries))
 	for _, entry := range entries {
-		haystack := strings.ToLower(strings.Join([]string{
-			entry.StrLabelCrc,
-			entry.StrTypeCrc,
-			entry.RealName,
-			strings.Join(entry.StrContentTypeCrcs, " "),
-			strings.Join(entry.StrCategoryCrcs, " "),
-			strings.Join(entry.StrContentNameCrcs, " "),
-			strings.Join(entry.StrDepCrcs, " "),
-		}, " "))
+		var haystackParts []string
+		switch field {
+		case "", "all":
+			haystackParts = []string{
+				entry.StrLabelCrc,
+				entry.StrTypeCrc,
+				entry.RealName,
+				strings.Join(entry.StrContentTypeCrcs, " "),
+				strings.Join(entry.StrCategoryCrcs, " "),
+				strings.Join(entry.StrContentNameCrcs, " "),
+				strings.Join(entry.StrDepCrcs, " "),
+			}
+		case "label":
+			haystackParts = []string{entry.StrLabelCrc}
+		case "type":
+			haystackParts = []string{entry.StrTypeCrc}
+		case "dependencies", "deps":
+			haystackParts = []string{strings.Join(entry.StrDepCrcs, " ")}
+		case "content", "contenttypes":
+			haystackParts = []string{
+				strings.Join(entry.StrContentTypeCrcs, " "),
+				strings.Join(entry.StrContentNameCrcs, " "),
+			}
+		case "categories":
+			haystackParts = []string{strings.Join(entry.StrCategoryCrcs, " ")}
+		case "realname", "name":
+			haystackParts = []string{entry.RealName}
+		default:
+			haystackParts = []string{
+				entry.StrLabelCrc,
+				entry.StrTypeCrc,
+				entry.RealName,
+				strings.Join(entry.StrContentTypeCrcs, " "),
+				strings.Join(entry.StrCategoryCrcs, " "),
+				strings.Join(entry.StrContentNameCrcs, " "),
+				strings.Join(entry.StrDepCrcs, " "),
+			}
+		}
+		haystack := strings.ToLower(strings.Join(haystackParts, " "))
 		matched := true
 		for _, token := range tokens {
 			if !strings.Contains(haystack, token) {
@@ -560,6 +668,29 @@ func writeSSE(w io.Writer, event string, v any) {
 		fmt.Fprintf(w, "event: %s\n", event)
 	}
 	fmt.Fprintf(w, "data: %s\n\n", payload)
+}
+
+func previewItems(preview PreviewInfo) []map[string]string {
+	if len(preview.Items) == 0 {
+		return nil
+	}
+	resp := make([]map[string]string, 0, len(preview.Items))
+	for _, item := range preview.Items {
+		resp = append(resp, map[string]string{
+			"id":   item.ID,
+			"type": item.ContentType,
+		})
+	}
+	return resp
+}
+
+func findPreviewItem(preview PreviewInfo, id string) (PreviewItem, bool) {
+	for _, item := range preview.Items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return PreviewItem{}, false
 }
 
 func reflectTypeName(instance any) string {

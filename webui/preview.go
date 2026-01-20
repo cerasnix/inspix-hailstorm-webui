@@ -3,11 +3,13 @@ package webui
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,9 +22,19 @@ type PreviewInfo struct {
 	ContentType string
 	Path        string
 	Source      string
+	OutputDir   string
+	Exportable  bool
+	Items       []PreviewItem
 }
 
 var loopRE = regexp.MustCompile(`(?i)\bloop (start|end)\b`)
+var streamCountRE = regexp.MustCompile(`(?i)(stream count|streams|subsong count|subsongs)\s*:\s*(\d+)`)
+
+type PreviewItem struct {
+	ID          string
+	ContentType string
+	Path        string
+}
 
 func resolvePreview(entryLabel string, entryType string, resourceType uint32, plainPath string) PreviewInfo {
 	if direct := sniffDirectPreview(plainPath); direct.Available {
@@ -32,15 +44,13 @@ func resolvePreview(entryLabel string, entryType string, resourceType uint32, pl
 	}
 
 	if isAcb(entryLabel) {
-		if info := ensureAcbPreview(entryLabel, plainPath); info.Available {
+		if info := ensureAcbPreview(entryLabel, plainPath); info.Available || info.Exportable {
 			return info
 		}
 	}
 
 	if isAssetBundle(entryLabel, resourceType) {
-		if info := ensureAssetBundlePreview(entryLabel, plainPath); info.Available {
-			return info
-		}
+		return ensureAssetBundlePreview(entryLabel, plainPath, false)
 	}
 
 	return PreviewInfo{}
@@ -83,98 +93,127 @@ func sniffDirectPreview(path string) PreviewInfo {
 }
 
 func ensureAcbPreview(label string, plainPath string) PreviewInfo {
-	if !fileExists(plainPath) {
-		return PreviewInfo{}
-	}
-	if _, err := exec.LookPath("vgmstream-cli"); err != nil {
-		return PreviewInfo{}
-	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return PreviewInfo{}
+	outDir := filepath.Join(previewRoot, "acb")
+	toolsOK := acbToolsAvailable()
+	if !toolsOK {
+		return PreviewInfo{
+			OutputDir:  outDir,
+			Exportable: false,
+		}
 	}
 
-	outDir := filepath.Join(previewRoot, "acb")
+	if !fileExists(plainPath) {
+		return PreviewInfo{
+			OutputDir:  outDir,
+			Exportable: toolsOK,
+		}
+	}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return PreviewInfo{}
+		return PreviewInfo{
+			OutputDir:  outDir,
+			Exportable: toolsOK,
+		}
 	}
 	base := sanitizeLabel(label)
 	outPath := filepath.Join(outDir, base+".mp3")
 
-	if isFresh(outPath, plainPath) {
+	streamCount := detectStreamCount(plainPath)
+	if streamCount <= 1 {
+		if isFresh(outPath, plainPath) {
+			return PreviewInfo{
+				Available:   true,
+				Kind:        "audio",
+				ContentType: "audio/mpeg",
+				Path:        outPath,
+				Source:      "derived",
+				OutputDir:   outDir,
+				Exportable:  toolsOK,
+			}
+		}
+
+		_, ok := encodeAcbToMp3(plainPath, outPath, 0)
+		if !ok {
+			return PreviewInfo{
+				OutputDir:  outDir,
+				Exportable: toolsOK,
+			}
+		}
 		return PreviewInfo{
 			Available:   true,
 			Kind:        "audio",
 			ContentType: "audio/mpeg",
 			Path:        outPath,
 			Source:      "derived",
+			OutputDir:   outDir,
+			Exportable:  toolsOK,
 		}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "hailstorm-acb")
-	if err != nil {
-		return PreviewInfo{}
+	items := []PreviewItem{}
+	for i := 1; i <= streamCount; i++ {
+		suffix := fmt.Sprintf("%s_%02d.mp3", base, i)
+		out := filepath.Join(outDir, suffix)
+		if !isFresh(out, plainPath) {
+			item, ok := encodeAcbToMp3(plainPath, out, i)
+			if !ok {
+				continue
+			}
+			items = append(items, item)
+		} else {
+			items = append(items, PreviewItem{
+				ID:          fmt.Sprintf("%02d", i),
+				ContentType: "audio/mpeg",
+				Path:        out,
+			})
+		}
 	}
-	defer os.RemoveAll(tmpDir)
 
-	loopOnce := detectLoop(plainPath)
-	tmpWav := filepath.Join(tmpDir, "preview.wav")
-	vgmArgs := []string{}
-	if loopOnce {
-		vgmArgs = append(vgmArgs, "-L")
-	}
-	vgmArgs = append(vgmArgs, plainPath, "-o", tmpWav)
-
-	if err := exec.Command("vgmstream-cli", vgmArgs...).Run(); err != nil {
-		return PreviewInfo{}
-	}
-
-	if err := exec.Command(
-		"ffmpeg",
-		"-hide_banner",
-		"-loglevel",
-		"error",
-		"-y",
-		"-i",
-		tmpWav,
-		"-vn",
-		"-c:a",
-		"libmp3lame",
-		"-q:a",
-		"0",
-		"-f",
-		"mp3",
-		outPath,
-	).Run(); err != nil {
-		return PreviewInfo{}
+	if len(items) == 0 {
+		return PreviewInfo{
+			OutputDir:  outDir,
+			Exportable: toolsOK,
+		}
 	}
 
 	return PreviewInfo{
 		Available:   true,
 		Kind:        "audio",
 		ContentType: "audio/mpeg",
-		Path:        outPath,
+		Path:        items[0].Path,
 		Source:      "derived",
+		OutputDir:   outDir,
+		Exportable:  toolsOK,
+		Items:       items,
 	}
 }
 
-func ensureAssetBundlePreview(label string, plainPath string) PreviewInfo {
+func ensureAssetBundlePreview(label string, plainPath string, force bool) PreviewInfo {
 	outDir := filepath.Join(previewRoot, "assetbundle", sanitizeLabel(label))
 	_ = os.MkdirAll(outDir, 0755)
 
-	if info := findBundlePreview(outDir); info.Available {
-		return info
+	if !force {
+		if info := findBundlePreview(outDir); info.Available {
+			info.OutputDir = outDir
+			info.Exportable = assetBundleExportConfigured()
+			return info
+		}
 	}
 
-	cmdTemplate := strings.TrimSpace(os.Getenv("HAILSTORM_ASSETRIPPER_CMD"))
-	if cmdTemplate == "" {
-		return PreviewInfo{}
+	if !assetBundleExportConfigured() {
+		return PreviewInfo{
+			OutputDir:  outDir,
+			Exportable: false,
+		}
 	}
 
-	cmdLine := strings.ReplaceAll(cmdTemplate, "{input}", shellEscape(plainPath))
+	cmdLine := strings.ReplaceAll(os.Getenv("HAILSTORM_ASSETRIPPER_CMD"), "{input}", shellEscape(plainPath))
 	cmdLine = strings.ReplaceAll(cmdLine, "{output}", shellEscape(outDir))
 	_ = exec.Command("sh", "-c", cmdLine).Run()
 
-	return findBundlePreview(outDir)
+	info := findBundlePreview(outDir)
+	info.OutputDir = outDir
+	info.Exportable = assetBundleExportConfigured()
+	return info
 }
 
 func findBundlePreview(dir string) PreviewInfo {
@@ -236,12 +275,20 @@ func firstMatch(dir string, patterns []string) string {
 	return ""
 }
 
-func detectLoop(path string) bool {
+func detectStreamCount(path string) int {
 	out, err := exec.Command("vgmstream-cli", "-m", path).Output()
 	if err != nil {
-		return false
+		return 1
 	}
-	return loopRE.Match(out)
+	match := streamCountRE.FindStringSubmatch(string(out))
+	if len(match) < 3 {
+		return 1
+	}
+	count, err := strconv.Atoi(match[2])
+	if err != nil || count < 1 {
+		return 1
+	}
+	return count
 }
 
 func isFresh(outPath string, inputPath string) bool {
@@ -276,6 +323,86 @@ func shellEscape(value string) string {
 	}
 	value = strings.ReplaceAll(value, `'`, `'\''`)
 	return "'" + value + "'"
+}
+
+func encodeAcbToMp3(inputPath string, outPath string, subsong int) (PreviewItem, bool) {
+	tmpDir, err := os.MkdirTemp("", "hailstorm-acb")
+	if err != nil {
+		return PreviewItem{}, false
+	}
+	defer os.RemoveAll(tmpDir)
+
+	loopOnce := detectLoop(inputPath, subsong)
+	tmpWav := filepath.Join(tmpDir, "preview.wav")
+	vgmArgs := []string{}
+	if subsong > 0 {
+		vgmArgs = append(vgmArgs, "-s", fmt.Sprintf("%d", subsong))
+	}
+	if loopOnce {
+		vgmArgs = append(vgmArgs, "-L")
+	}
+	vgmArgs = append(vgmArgs, inputPath, "-o", tmpWav)
+
+	if err := exec.Command("vgmstream-cli", vgmArgs...).Run(); err != nil {
+		return PreviewItem{}, false
+	}
+
+	if err := exec.Command(
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-y",
+		"-i",
+		tmpWav,
+		"-vn",
+		"-c:a",
+		"libmp3lame",
+		"-q:a",
+		"0",
+		"-f",
+		"mp3",
+		outPath,
+	).Run(); err != nil {
+		return PreviewItem{}, false
+	}
+
+	itemID := "01"
+	if subsong > 0 {
+		itemID = fmt.Sprintf("%02d", subsong)
+	}
+	return PreviewItem{
+		ID:          itemID,
+		ContentType: "audio/mpeg",
+		Path:        outPath,
+	}, true
+}
+
+func detectLoop(path string, subsong int) bool {
+	args := []string{"-m"}
+	if subsong > 0 {
+		args = append(args, "-s", fmt.Sprintf("%d", subsong))
+	}
+	args = append(args, path)
+	out, err := exec.Command("vgmstream-cli", args...).Output()
+	if err != nil {
+		return false
+	}
+	return loopRE.Match(out)
+}
+
+func assetBundleExportConfigured() bool {
+	return strings.TrimSpace(os.Getenv("HAILSTORM_ASSETRIPPER_CMD")) != ""
+}
+
+func acbToolsAvailable() bool {
+	if _, err := exec.LookPath("vgmstream-cli"); err != nil {
+		return false
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return false
+	}
+	return true
 }
 
 func sniffKnown(buf []byte) (string, string) {

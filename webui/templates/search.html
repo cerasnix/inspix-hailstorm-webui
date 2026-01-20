@@ -1,27 +1,84 @@
 {{ define "search.html" }}
 <section class="page-head">
   <div>
-    <p class="eyebrow">Catalog</p>
-    <h1 class="page-title">Search results</h1>
-    <p id="searchSummary" class="page-subtitle">Loading catalog...</p>
+    <p class="eyebrow" data-i18n="search.eyebrow">Catalog</p>
+    <h1 class="page-title" data-i18n="search.title">Search results</h1>
+    <p
+      id="searchSummary"
+      class="page-subtitle"
+      data-i18n="search.loading"
+    >
+      Loading catalog...
+    </p>
+  </div>
+</section>
+
+<section class="panel-card search-filters">
+  <div class="search-bar">
+    <input
+      id="searchQuery"
+      class="form-control"
+      type="search"
+      placeholder="Search..."
+      data-i18n-placeholder="search.searchPlaceholder"
+    />
+    <select id="searchField" class="form-select">
+      <option value="all" data-i18n="search.field.all">All fields</option>
+      <option value="label" data-i18n="search.field.label">Label</option>
+      <option value="type" data-i18n="search.field.type">Type</option>
+      <option value="dependencies" data-i18n="search.field.deps">
+        Dependencies
+      </option>
+      <option value="content" data-i18n="search.field.content">
+        Content types
+      </option>
+      <option value="categories" data-i18n="search.field.categories">
+        Categories
+      </option>
+      <option value="realname" data-i18n="search.field.realname">Real name</option>
+    </select>
+    <button id="searchApply" class="btn btn-primary" data-i18n="search.searchButton">
+      Search
+    </button>
+    <button id="searchClear" class="btn btn-outline-dark" data-i18n="search.clear">
+      Clear
+    </button>
+  </div>
+  <div class="filter-block">
+    <span class="filter-title" data-i18n="home.filterMedia">Media</span>
+    <div id="mediaFilters" class="chip-row"></div>
+  </div>
+  <div class="filter-block">
+    <span class="filter-title" data-i18n="home.filterCharacter">Character</span>
+    <div id="characterFilters" class="chip-row"></div>
+  </div>
+  <div class="filter-block">
+    <span class="filter-title" data-i18n="search.filterTags">Tags</span>
+    <div id="tagFilters" class="chip-row"></div>
   </div>
   <div class="controls-row">
     <div class="control-group">
-      <label>Sort</label>
+      <label data-i18n="search.typeLabel">Type</label>
+      <select id="typeFilter" class="form-select">
+        <option value="" data-i18n="search.all">All</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label data-i18n="search.sort">Sort</label>
       <select id="sortBy" class="form-select">
-        <option value="label">Label</option>
+        <option value="label" data-i18n="search.field.label">Label</option>
         <option value="size">Size</option>
       </select>
     </div>
     <div class="control-group">
-      <label>Order</label>
+      <label data-i18n="search.order">Order</label>
       <select id="sortDir" class="form-select">
-        <option value="asc">Ascending</option>
-        <option value="desc">Descending</option>
+        <option value="asc" data-i18n="search.asc">Ascending</option>
+        <option value="desc" data-i18n="search.desc">Descending</option>
       </select>
     </div>
     <div class="control-group">
-      <label>Per page</label>
+      <label data-i18n="search.perPage">Per page</label>
       <select id="entriesPerPage" class="form-select">
         <option>12</option>
         <option>24</option>

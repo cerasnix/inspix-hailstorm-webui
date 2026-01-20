@@ -1,45 +1,53 @@
 {{ define "home.html" }}
 <section class="hero-grid">
   <div class="hero-copy">
-    <p class="eyebrow">Manifest cockpit</p>
-    <h1 class="hero-title">Pull, decrypt, parse. All in one place.</h1>
-    <p class="hero-subtitle">
+    <p class="eyebrow" data-i18n="home.heroEyebrow">Manifest cockpit</p>
+    <h1 class="hero-title" data-i18n="home.heroTitle">
+      Pull, decrypt, parse. All in one place.
+    </h1>
+    <p class="hero-subtitle" data-i18n="home.heroSubtitle">
       Launch updates, conversions, and masterdata builds without leaving the
       browser. Everything runs on your local cache.
     </p>
     <div class="hero-actions">
       {{ template "searchform.html" . }}
-      <a class="btn btn-outline-dark" href="/search">Browse catalog</a>
+      <a
+        class="btn btn-outline-dark"
+        href="/search"
+        data-i18n="home.browseCatalog"
+        data-lang-link="true"
+        >Browse catalog</a
+      >
     </div>
   </div>
   <div class="hero-panel">
     <div class="panel-header">
-      <span>Status</span>
+      <span data-i18n="home.status">Status</span>
       <span id="statusUpdated" class="badge">Idle</span>
     </div>
     <div class="stat-grid">
       <div class="stat-card">
-        <span class="stat-label">Version</span>
+        <span class="stat-label" data-i18n="home.statusVersion">Version</span>
         <span id="statusVersion" class="stat-value">-</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">Catalog</span>
+        <span class="stat-label" data-i18n="home.statusCatalog">Catalog</span>
         <span id="statusCatalog" class="stat-value">-</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">DB Entries</span>
+        <span class="stat-label" data-i18n="home.statusDb">DB Entries</span>
         <span id="statusDb" class="stat-value">-</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">Plain Cache</span>
+        <span class="stat-label" data-i18n="home.statusPlain">Plain Cache</span>
         <span id="statusPlain" class="stat-value">-</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">Raw Cache</span>
+        <span class="stat-label" data-i18n="home.statusAssets">Raw Cache</span>
         <span id="statusAssets" class="stat-value">-</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">Masterdata</span>
+        <span class="stat-label" data-i18n="home.statusMaster">Masterdata</span>
         <span id="statusMaster" class="stat-value">-</span>
       </div>
     </div>
@@ -52,49 +60,84 @@
 <section class="panel-grid">
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Run a task</h2>
-      <span class="badge badge-dark">Queue</span>
+      <h2 data-i18n="home.runTask">Run a task</h2>
+      <span class="badge badge-dark" data-i18n="home.queue">Queue</span>
     </div>
     <form id="taskForm" class="task-form">
-      <label class="form-label">Mode</label>
+      <label class="form-label" data-i18n="home.taskMode">Mode</label>
       <select id="taskMode" class="form-select">
-        <option value="update">Update (download + parse)</option>
-        <option value="dbonly">Update DB only</option>
-        <option value="convert">Convert (decrypt existing)</option>
-        <option value="master">Masterdata (parse existing)</option>
-        <option value="analyze">Analyze only</option>
+        <option value="update" data-i18n="home.taskOption.update">
+          Update (download + parse)
+        </option>
+        <option value="dbonly" data-i18n="home.taskOption.dbonly">
+          Update DB only
+        </option>
+        <option value="convert" data-i18n="home.taskOption.convert">
+          Convert (decrypt existing)
+        </option>
+        <option value="master" data-i18n="home.taskOption.master">
+          Masterdata (parse existing)
+        </option>
+        <option value="analyze" data-i18n="home.taskOption.analyze">
+          Analyze only
+        </option>
       </select>
+      <div id="taskModeDesc" class="text-muted"></div>
 
       <div class="form-row">
         <div>
-          <label class="form-label">Client Version</label>
+          <label class="form-label" data-i18n="home.taskClientVersion">
+            Client Version
+          </label>
           <input id="taskClientVersion" class="form-control" type="text" />
         </div>
         <div>
-          <label class="form-label">Resource Info</label>
+          <label class="form-label" data-i18n="home.taskResInfo">
+            Resource Info
+          </label>
           <input id="taskResInfo" class="form-control" type="text" />
         </div>
       </div>
 
-      <label class="form-label">Filter Regex</label>
+      <label class="form-label" data-i18n="home.taskFilterRegex">
+        Filter Regex
+      </label>
       <input id="taskFilterRegex" class="form-control" type="text" />
 
       <div class="checkbox-grid">
-        <label class="form-check">
-          <input id="taskForce" class="form-check-input" type="checkbox" />
-          <span class="form-check-label">Force update</span>
-        </label>
-        <label class="form-check">
-          <input id="taskKeepRaw" class="form-check-input" type="checkbox" />
-          <span class="form-check-label">Keep raw cache</span>
-        </label>
-        <label class="form-check">
-          <input id="taskKeepPath" class="form-check-input" type="checkbox" />
-          <span class="form-check-label">Keep download path</span>
-        </label>
+        <div class="checkbox-item">
+          <label class="form-check">
+            <input id="taskForce" class="form-check-input" type="checkbox" />
+            <span class="form-check-label" data-i18n="home.forceUpdate">
+              Force update
+            </span>
+          </label>
+        </div>
+        <div class="checkbox-item">
+          <label class="form-check">
+            <input id="taskKeepRaw" class="form-check-input" type="checkbox" />
+            <span class="form-check-label" data-i18n="home.keepRaw">
+              Keep raw cache
+            </span>
+          </label>
+          <div class="checkbox-note text-muted" data-i18n="home.keepRawDesc">
+            Preserve downloaded raw assets instead of clearing cache/assets.
+          </div>
+        </div>
+        <div class="checkbox-item">
+          <label class="form-check">
+            <input id="taskKeepPath" class="form-check-input" type="checkbox" />
+            <span class="form-check-label" data-i18n="home.keepPath">
+              Keep download path
+            </span>
+          </label>
+          <div class="checkbox-note text-muted" data-i18n="home.keepPathDesc">
+            Keep original folder structure for cache/assets downloads.
+          </div>
+        </div>
       </div>
 
-      <button class="btn btn-primary w-100" type="submit">
+      <button class="btn btn-primary w-100" type="submit" data-i18n="home.startTask">
         Start task
       </button>
     </form>
@@ -102,20 +145,41 @@
 
   <div class="panel-card">
     <div class="panel-header">
-      <h2>Task log</h2>
-      <button id="taskClear" class="btn btn-outline-dark btn-sm">
+      <h2 data-i18n="home.taskLog">Task log</h2>
+      <button
+        id="taskClear"
+        class="btn btn-outline-dark btn-sm"
+        data-i18n="home.clearLog"
+      >
         Clear
       </button>
     </div>
-    <pre id="taskLog" class="log-shell">No task started.</pre>
+    <pre id="taskLog" class="log-shell" data-i18n="home.noTaskStarted">
+No task started.</pre>
   </div>
 </section>
 
 <section class="panel-card">
   <div class="panel-header">
-    <h2>Recent tasks</h2>
+    <h2 data-i18n="home.quickFilters">Quick filters</h2>
   </div>
-  <div id="taskHistory" class="task-history">No tasks yet.</div>
+  <div class="filter-block">
+    <span class="filter-title" data-i18n="home.filterMedia">Media</span>
+    <div id="quickMediaFilters" class="chip-row"></div>
+  </div>
+  <div class="filter-block">
+    <span class="filter-title" data-i18n="home.filterCharacter">Character</span>
+    <div id="quickCharacterFilters" class="chip-row"></div>
+  </div>
+</section>
+
+<section class="panel-card">
+  <div class="panel-header">
+    <h2 data-i18n="home.recentTasks">Recent tasks</h2>
+  </div>
+  <div id="taskHistory" class="task-history" data-i18n="home.noTasks">
+    No tasks yet.
+  </div>
 </section>
 
 <script src="/static/js/home.js" defer></script>
