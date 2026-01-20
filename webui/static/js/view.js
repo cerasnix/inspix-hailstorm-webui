@@ -32,7 +32,20 @@ function fileUrlFromPath(path) {
   if (!path) {
     return "#";
   }
+  if (/^file:\/\//i.test(path)) {
+    return path;
+  }
   let normalized = path.replace(/\\/g, "/");
+  const uncMatch = normalized.match(/^\/\/([^/]+)\/(.+)$/);
+  if (uncMatch) {
+    return `file://${uncMatch[1]}/${encodeURI(uncMatch[2])}`;
+  }
+  const winMatch = normalized.match(/^([a-zA-Z]):(\/.*)?$/);
+  if (winMatch) {
+    const drive = winMatch[1].toUpperCase();
+    const rest = winMatch[2] || "/";
+    return `file:///${drive}:${encodeURI(rest)}`;
+  }
   if (!normalized.startsWith("/")) {
     normalized = `/${normalized}`;
   }

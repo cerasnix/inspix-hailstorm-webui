@@ -100,20 +100,20 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 	toolsOK := acbToolsAvailable()
 	if !toolsOK {
 		return PreviewInfo{
-			OutputDir:  outDir,
+			OutputDir:  outputDirForClient(outDir),
 			Exportable: false,
 		}
 	}
 
 	if !fileExists(plainPath) {
 		return PreviewInfo{
-			OutputDir:  outDir,
+			OutputDir:  outputDirForClient(outDir),
 			Exportable: toolsOK,
 		}
 	}
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return PreviewInfo{
-			OutputDir:  outDir,
+			OutputDir:  outputDirForClient(outDir),
 			Exportable: toolsOK,
 		}
 	}
@@ -129,7 +129,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 				ContentType: "audio/mpeg",
 				Path:        outPath,
 				Source:      "derived",
-				OutputDir:   outDir,
+				OutputDir:   outputDirForClient(outDir),
 				Exportable:  toolsOK,
 			}
 		}
@@ -137,7 +137,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 		_, ok := encodeAcbToMp3(plainPath, outPath, 0)
 		if !ok {
 			return PreviewInfo{
-				OutputDir:  outDir,
+				OutputDir:  outputDirForClient(outDir),
 				Exportable: toolsOK,
 			}
 		}
@@ -147,7 +147,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 			ContentType: "audio/mpeg",
 			Path:        outPath,
 			Source:      "derived",
-			OutputDir:   outDir,
+			OutputDir:   outputDirForClient(outDir),
 			Exportable:  toolsOK,
 		}
 	}
@@ -173,7 +173,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 
 	if len(items) == 0 {
 		return PreviewInfo{
-			OutputDir:  outDir,
+			OutputDir:  outputDirForClient(outDir),
 			Exportable: toolsOK,
 		}
 	}
@@ -184,7 +184,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 		ContentType: "audio/mpeg",
 		Path:        items[0].Path,
 		Source:      "derived",
-		OutputDir:   outDir,
+		OutputDir:   outputDirForClient(outDir),
 		Exportable:  toolsOK,
 		Items:       items,
 	}
@@ -196,7 +196,7 @@ func ensureAssetBundlePreview(label string, plainPath string, force bool) Previe
 
 	if !force {
 		if info := findBundlePreview(outDir); info.Available {
-			info.OutputDir = outDir
+			info.OutputDir = outputDirForClient(outDir)
 			info.Exportable = assetBundleExportConfigured()
 			return info
 		}
@@ -204,7 +204,7 @@ func ensureAssetBundlePreview(label string, plainPath string, force bool) Previe
 
 	if !assetBundleExportConfigured() {
 		return PreviewInfo{
-			OutputDir:  outDir,
+			OutputDir:  outputDirForClient(outDir),
 			Exportable: false,
 		}
 	}
@@ -222,7 +222,7 @@ func ensureAssetBundlePreview(label string, plainPath string, force bool) Previe
 	}
 
 	info := findBundlePreview(outDir)
-	info.OutputDir = outDir
+	info.OutputDir = outputDirForClient(outDir)
 	info.Exportable = assetBundleExportConfigured()
 	return info
 }
@@ -408,6 +408,17 @@ func shellEscape(value string) string {
 	}
 	value = strings.ReplaceAll(value, `'`, `'\''`)
 	return "'" + value + "'"
+}
+
+func outputDirForClient(path string) string {
+	if path == "" {
+		return path
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 func encodeAcbToMp3(inputPath string, outPath string, subsong int) (PreviewItem, bool) {
