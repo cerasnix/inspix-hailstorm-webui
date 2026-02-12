@@ -54,6 +54,9 @@ go run . --web --addr 127.0.0.1:5001
 
 - ACB 音频预览：需要 `vgmstream-cli` 与 `ffmpeg` 已加入 `PATH`。
   预览输出缓存于 `cache/webui-preview/acb`。
+- USM 视频预览（`.usm`）：需要 `ffmpeg` 在 `PATH` 中。
+  WebUI 会自动转码为 MP4；直接 `.usm` 缓存于 `cache/webui-preview/usm`，
+  AssetRipper 导出产物则在导出目录内生成派生 MP4。
 - Unity assetbundle 预览：设置 `ASSETRIPPER_DIR` 为 AssetRipper
   发行版目录（包含 `AssetRipper.GUI.Free`）。Inspix-hailstorm 会以 headless
   模式启动 AssetRipper 并自动调用导出接口，输出缓存于
@@ -62,6 +65,7 @@ go run . --web --addr 127.0.0.1:5001
   - Assetbundle 导出：确认在启动 WebUI 前已设置 `ASSETRIPPER_DIR`，
     且二进制文件存在。
   - ACB 预览：确保 `vgmstream-cli` 与 `ffmpeg` 在 `PATH` 中可用。
+  - USM 预览：确保 `ffmpeg` 在 `PATH` 中可用。
 
 示例（设置 AssetRipper 目录）：
 
@@ -91,6 +95,13 @@ Assetbundle 导出（AssetRipper GUI Web）
 ACB 音频预览
 1) 安装 `vgmstream-cli` 与 `ffmpeg`，确保在 `PATH` 中。
 2) 在 `.acb` 条目上点击“导出并预览”。
+
+USM 视频预览
+1) 安装 `ffmpeg`，并确保在 `PATH` 中可执行。
+2) 对直接 `.usm` 条目，打开条目详情页（或点击“导出并预览”）后会生成
+   `cache/webui-preview/usm/<label>.mp4`。
+3) 对 AssetRipper 导出结果中的 `.usm` 文件，WebUI 会在同目录自动生成
+   `<file>.usm.preview.mp4`。
 
 ### Docker
 

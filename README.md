@@ -55,6 +55,9 @@ are available:
 
 - ACB audio preview: requires `vgmstream-cli` and `ffmpeg` in `PATH`.
   Preview output is cached under `cache/webui-preview/acb`.
+- USM video preview (`.usm`): requires `ffmpeg` in `PATH`.
+  WebUI auto transcodes to MP4 and caches under `cache/webui-preview/usm`
+  (direct `.usm`) or next to exported files for AssetRipper outputs.
 - Unity assetbundle preview: set `ASSETRIPPER_DIR` to your
   AssetRipper release folder (containing `AssetRipper.GUI.Free`).
   Inspix-hailstorm will start AssetRipper in headless mode and call its
@@ -64,6 +67,7 @@ are available:
   - Assetbundle export: `ASSETRIPPER_DIR` is set in your shell
     environment before launching the WebUI, and the binary exists.
   - ACB audio preview: `vgmstream-cli` and `ffmpeg` are available in `PATH`.
+  - USM video preview: `ffmpeg` is available in `PATH`.
 
 Example (set AssetRipper directory):
 
@@ -92,6 +96,13 @@ Notes:
 ACB audio preview
 1) Install `vgmstream-cli` and `ffmpeg` and ensure both are in `PATH`.
 2) Use "Export & Preview" on an `.acb` entry.
+
+USM video preview
+1) Install `ffmpeg` and ensure it is in `PATH`.
+2) For direct `.usm` entries, open the entry view (or click "Export & Preview")
+   to generate `cache/webui-preview/usm/<label>.mp4`.
+3) For `.usm` files exported from AssetRipper inside assetbundle output,
+   WebUI will auto-generate `<file>.usm.preview.mp4` next to the source file.
 
 ### Docker
 

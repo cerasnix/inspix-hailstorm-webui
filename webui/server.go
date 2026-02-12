@@ -350,6 +350,8 @@ func (s *Server) handleEntryPreviewExport(w http.ResponseWriter, r *http.Request
 	switch {
 	case isAssetBundle(entry.StrLabelCrc, entry.ResourceType):
 		preview = ensureAssetBundlePreview(entry.StrLabelCrc, path, force)
+	case isUsm(entry.StrLabelCrc):
+		preview = ensureUsmPreview(entry.StrLabelCrc, path)
 	case isAcb(entry.StrLabelCrc):
 		preview = ensureAcbPreview(entry.StrLabelCrc, path)
 	default:

@@ -46,6 +46,12 @@ func resolvePreview(entryLabel string, entryType string, resourceType uint32, pl
 		return direct
 	}
 
+	if isUsm(entryLabel) {
+		if info := ensureUsmPreview(entryLabel, plainPath); info.Available || info.Exportable {
+			return info
+		}
+	}
+
 	if isAcb(entryLabel) {
 		if info := ensureAcbPreview(entryLabel, plainPath); info.Available || info.Exportable {
 			return info
@@ -190,6 +196,50 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 	}
 }
 
+func ensureUsmPreview(label string, plainPath string) PreviewInfo {
+	outDir := filepath.Join(previewRoot, "usm")
+	toolsOK := ffmpegAvailable()
+	if !toolsOK {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: false,
+		}
+	}
+
+	if !fileExists(plainPath) {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+
+	outPath := filepath.Join(outDir, sanitizeLabel(label)+".mp4")
+	if !isFresh(outPath, plainPath) {
+		if !transcodeUsmToMp4(plainPath, outPath) {
+			return PreviewInfo{
+				OutputDir:  outputDirForClient(outDir),
+				Exportable: toolsOK,
+			}
+		}
+	}
+
+	return PreviewInfo{
+		Available:   true,
+		Kind:        "video",
+		ContentType: "video/mp4",
+		Path:        outPath,
+		Source:      "derived",
+		OutputDir:   outputDirForClient(outDir),
+		Exportable:  toolsOK,
+	}
+}
+
 func ensureAssetBundlePreview(label string, plainPath string, force bool) PreviewInfo {
 	outDir := filepath.Join(previewRoot, "assetbundle", sanitizeLabel(label))
 	_ = os.MkdirAll(outDir, 0755)
@@ -247,7 +297,7 @@ func findBundlePreview(dir string) PreviewInfo {
 			Source:      "derived",
 		}
 	}
-	if vid := firstMatchRecursive(dir, []string{"*.mp4", "*.webm"}); vid != "" {
+	if vid := firstMatchRecursiveExt(dir, []string{".mp4", ".webm"}); vid != "" {
 		ctype := "video/mp4"
 		if strings.HasSuffix(strings.ToLower(vid), ".webm") {
 			ctype = "video/webm"
@@ -258,6 +308,17 @@ func findBundlePreview(dir string) PreviewInfo {
 			ContentType: ctype,
 			Path:        vid,
 			Source:      "derived",
+		}
+	}
+	if usm := firstMatchRecursiveExt(dir, []string{".usm"}); usm != "" {
+		if derived, ok := ensureUsmDerivedVideo(usm); ok {
+			return PreviewInfo{
+				Available:   true,
+				Kind:        "video",
+				ContentType: "video/mp4",
+				Path:        derived,
+				Source:      "derived",
+			}
 		}
 	}
 	if model := firstMatchRecursive(dir, []string{"*.glb", "*.gltf"}); model != "" {
@@ -316,6 +377,43 @@ func firstMatchRecursive(dir string, patterns []string) string {
 			return errStopWalk
 		}
 		return nil
+	})
+	if err != nil && !errors.Is(err, errStopWalk) {
+		return ""
+	}
+	return match
+}
+
+func firstMatchRecursiveExt(dir string, exts []string) string {
+	if len(exts) == 0 {
+		return ""
+	}
+	extSet := map[string]bool{}
+	for _, ext := range exts {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		if ext == "" {
+			continue
+		}
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		extSet[ext] = true
+	}
+	if len(extSet) == 0 {
+		return ""
+	}
+
+	match := ""
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if !extSet[ext] {
+			return nil
+		}
+		match = path
+		return errStopWalk
 	})
 	if err != nil && !errors.Is(err, errStopWalk) {
 		return ""
@@ -390,6 +488,10 @@ func isFresh(outPath string, inputPath string) bool {
 
 func isAcb(label string) bool {
 	return strings.HasSuffix(strings.ToLower(label), ".acb")
+}
+
+func isUsm(label string) bool {
+	return strings.HasSuffix(strings.ToLower(label), ".usm")
 }
 
 func isAssetBundle(label string, resourceType uint32) bool {
@@ -498,7 +600,43 @@ func acbToolsAvailable() bool {
 	if _, err := exec.LookPath("vgmstream-cli"); err != nil {
 		return false
 	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
+	return ffmpegAvailable()
+}
+
+func ffmpegAvailable() bool {
+	_, err := exec.LookPath("ffmpeg")
+	return err == nil
+}
+
+func ensureUsmDerivedVideo(inputPath string) (string, bool) {
+	if !ffmpegAvailable() {
+		return "", false
+	}
+	outPath := inputPath + ".preview.mp4"
+	if isFresh(outPath, inputPath) {
+		return outPath, true
+	}
+	if !transcodeUsmToMp4(inputPath, outPath) {
+		return "", false
+	}
+	return outPath, true
+}
+
+func transcodeUsmToMp4(inputPath string, outPath string) bool {
+	if err := exec.Command(
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-y",
+		"-i",
+		inputPath,
+		"-movflags",
+		"+faststart",
+		"-c:a",
+		"aac",
+		outPath,
+	).Run(); err != nil {
 		return false
 	}
 	return true

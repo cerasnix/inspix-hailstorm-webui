@@ -153,6 +153,8 @@ window.I18n = (() => {
         "Inspix-hailstorm will start AssetRipper headless and call its export API.",
       "view.previewConfigAcb":
         "ACB audio preview: require vgmstream-cli + ffmpeg in PATH.",
+      "view.previewConfigUsm":
+        "USM video preview: require ffmpeg in PATH (auto transcode to MP4).",
       "view.previewConfigCache": "Outputs cached under cache/webui-preview.",
       "view.previewConfigReadme": "Detailed steps in",
       "view.failedLoad": "Failed to load entry.",
@@ -320,6 +322,8 @@ window.I18n = (() => {
         "Inspix-hailstorm 会以 headless 模式启动 AssetRipper 并自动调用导出接口。",
       "view.previewConfigAcb":
         "ACB 预览：需要 vgmstream-cli 与 ffmpeg 可执行文件在 PATH 中。",
+      "view.previewConfigUsm":
+        "USM 预览：需要 ffmpeg 在 PATH 中（会自动转码为 MP4）。",
       "view.previewConfigCache": "输出缓存于 cache/webui-preview。",
       "view.previewConfigReadme": "详细步骤参考",
       "view.failedLoad": "加载条目失败。",
@@ -489,6 +493,8 @@ window.I18n = (() => {
         "Inspix-hailstorm が AssetRipper を headless で起動し、エクスポート API を呼び出します。",
       "view.previewConfigAcb":
         "ACB プレビュー：vgmstream-cli と ffmpeg を PATH に配置してください。",
+      "view.previewConfigUsm":
+        "USM プレビュー：ffmpeg を PATH に配置してください（MP4 へ自動変換）。",
       "view.previewConfigCache": "出力は cache/webui-preview に保存されます。",
       "view.previewConfigReadme": "詳細は",
       "view.failedLoad": "エントリの読み込みに失敗しました。",
