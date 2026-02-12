@@ -32,6 +32,8 @@ type PreviewInfo struct {
 var loopRE = regexp.MustCompile(`(?i)\bloop (start|end)\b`)
 var streamCountRE = regexp.MustCompile(`(?i)(stream count|streams|subsong count|subsongs)\s*:\s*(\d+)`)
 var meshVertexCountRE = regexp.MustCompile(`"m_VertexCount"\s*:\s*(\d+)`)
+var musicLyricVideoRE = regexp.MustCompile(`(?i)^music_lyric_video_(\d+)\.usm$`)
+var trailingNumberBeforeExtRE = regexp.MustCompile(`(?i)(\d+)(?:\.[^.]+)?$`)
 
 type PreviewItem struct {
 	ID          string
@@ -47,7 +49,7 @@ func resolvePreview(entryLabel string, entryType string, resourceType uint32, pl
 	}
 
 	if isUsm(entryLabel) {
-		if info := ensureUsmPreview(entryLabel, plainPath); info.Available || info.Exportable {
+		if info := ensureUsmPreview(entryLabel, plainPath, false); info.Available || info.Exportable {
 			return info
 		}
 	}
@@ -196,7 +198,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 	}
 }
 
-func ensureUsmPreview(label string, plainPath string) PreviewInfo {
+func ensureUsmPreview(label string, plainPath string, force bool) PreviewInfo {
 	outDir := filepath.Join(previewRoot, "usm")
 	toolsOK := ffmpegAvailable()
 	if !toolsOK {
@@ -219,9 +221,24 @@ func ensureUsmPreview(label string, plainPath string) PreviewInfo {
 		}
 	}
 
+	companionAcb := findUsmCompanionAcbPath(label, plainPath)
+	companionAudio := ""
+	if companionAcb != "" {
+		if derivedAudio, ok := ensureAcbAudioForUsm(companionAcb); ok {
+			companionAudio = derivedAudio
+		}
+	}
+
 	outPath := filepath.Join(outDir, sanitizeLabel(label)+".mp4")
-	if !isFresh(outPath, plainPath) {
-		if !transcodeUsmToMp4(plainPath, outPath) {
+	deps := []string{plainPath}
+	if companionAcb != "" {
+		deps = append(deps, companionAcb)
+	}
+	if companionAudio != "" {
+		deps = append(deps, companionAudio)
+	}
+	if force || !isFreshForInputs(outPath, deps...) {
+		if !transcodeUsmToMp4(plainPath, companionAudio, outPath) {
 			return PreviewInfo{
 				OutputDir:  outputDirForClient(outDir),
 				Exportable: toolsOK,
@@ -486,6 +503,26 @@ func isFresh(outPath string, inputPath string) bool {
 	return outInfo.ModTime().After(inInfo.ModTime().Add(-1 * time.Second))
 }
 
+func isFreshForInputs(outPath string, inputPaths ...string) bool {
+	outInfo, err := os.Stat(outPath)
+	if err != nil {
+		return false
+	}
+	for _, inputPath := range inputPaths {
+		if strings.TrimSpace(inputPath) == "" {
+			continue
+		}
+		inInfo, err := os.Stat(inputPath)
+		if err != nil {
+			return false
+		}
+		if !outInfo.ModTime().After(inInfo.ModTime().Add(-1 * time.Second)) {
+			return false
+		}
+	}
+	return true
+}
+
 func isAcb(label string) bool {
 	return strings.HasSuffix(strings.ToLower(label), ".acb")
 }
@@ -616,13 +653,244 @@ func ensureUsmDerivedVideo(inputPath string) (string, bool) {
 	if isFresh(outPath, inputPath) {
 		return outPath, true
 	}
-	if !transcodeUsmToMp4(inputPath, outPath) {
+	if !transcodeUsmToMp4(inputPath, "", outPath) {
 		return "", false
 	}
 	return outPath, true
 }
 
-func transcodeUsmToMp4(inputPath string, outPath string) bool {
+func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath string) bool {
+	// Prefer remux first for speed and to preserve original H.264 bitstream.
+	// Some USM files carry no audio stream, so optional ACB companion audio can
+	// be mapped as input #1.
+	if companionAudioPath != "" {
+		// USM packets may lack stable timestamps for stream-copy muxing. Assign
+		// deterministic PTS/DTS from frame index so we can keep H.264 bitstream.
+		fps := detectVideoFPS(inputPath)
+		setTS := fmt.Sprintf("setts=pts=N/%.6f/TB:dts=N/%.6f/TB", fps, fps)
+		remuxWithAudioArgs := []string{
+			"-hide_banner",
+			"-loglevel", "error",
+			"-y",
+			"-fflags", "+genpts",
+			"-i", inputPath,
+			"-i", companionAudioPath,
+			"-map", "0:v:0",
+			"-map", "1:a:0",
+			"-c:v", "copy",
+			"-c:a", "copy",
+			"-bsf:v", setTS,
+			"-shortest",
+			"-movflags", "+faststart",
+			outPath,
+		}
+		if err := exec.Command("ffmpeg", remuxWithAudioArgs...).Run(); err == nil {
+			return true
+		}
+
+		// Fallback when stream-copy muxing still fails on specific files.
+		transcodeWithAudioArgs := []string{
+			"-hide_banner",
+			"-loglevel", "error",
+			"-y",
+			"-fflags", "+genpts",
+			"-i", inputPath,
+			"-i", companionAudioPath,
+			"-map", "0:v:0",
+			"-map", "1:a:0",
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-pix_fmt", "yuv420p",
+			"-profile:v", "main",
+			"-level:v", "4.1",
+			"-c:a", "copy",
+			"-shortest",
+			"-movflags", "+faststart",
+			outPath,
+		}
+		return exec.Command("ffmpeg", transcodeWithAudioArgs...).Run() == nil
+	}
+
+	// USM-contained audio stream is optional.
+	remuxArgs := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-fflags", "+genpts",
+		"-i", inputPath,
+		"-map", "0:v:0",
+		"-map", "0:a?",
+		"-c:v", "copy",
+		"-c:a", "copy",
+		"-movflags", "+faststart",
+		outPath,
+	}
+	if err := exec.Command("ffmpeg", remuxArgs...).Run(); err == nil {
+		return true
+	}
+
+	// Fallback to full transcode when remux fails on specific streams.
+	transcodeArgs := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-fflags", "+genpts",
+		"-i", inputPath,
+		"-map", "0:v:0",
+		"-map", "0:a?",
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-pix_fmt", "yuv420p",
+		"-profile:v", "main",
+		"-level:v", "4.1",
+		"-c:a", "aac",
+		"-ac", "2",
+		"-movflags", "+faststart",
+		outPath,
+	}
+	return exec.Command("ffmpeg", transcodeArgs...).Run() == nil
+}
+
+func detectVideoFPS(inputPath string) float64 {
+	out, err := exec.Command(
+		"ffprobe",
+		"-v",
+		"error",
+		"-select_streams",
+		"v:0",
+		"-show_entries",
+		"stream=avg_frame_rate,r_frame_rate",
+		"-of",
+		"default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	).Output()
+	if err != nil {
+		return 30
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "0/0" {
+			continue
+		}
+		if fps, ok := parseFrameRate(line); ok {
+			return fps
+		}
+	}
+	return 30
+}
+
+func parseFrameRate(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if strings.Contains(raw, "/") {
+		parts := strings.SplitN(raw, "/", 2)
+		if len(parts) != 2 {
+			return 0, false
+		}
+		num, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+		if err != nil || num <= 0 {
+			return 0, false
+		}
+		den, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if err != nil || den <= 0 {
+			return 0, false
+		}
+		fps := num / den
+		if fps <= 0 {
+			return 0, false
+		}
+		return fps, true
+	}
+	fps, err := strconv.ParseFloat(raw, 64)
+	if err != nil || fps <= 0 {
+		return 0, false
+	}
+	return fps, true
+}
+
+func findUsmCompanionAcbPath(label string, usmPath string) string {
+	dir := filepath.Dir(usmPath)
+	fileName := strings.ToLower(filepath.Base(label))
+
+	id := ""
+	if match := musicLyricVideoRE.FindStringSubmatch(fileName); len(match) >= 2 {
+		id = match[1]
+	} else if match := trailingNumberBeforeExtRE.FindStringSubmatch(fileName); len(match) >= 2 {
+		id = match[1]
+	}
+	if id == "" {
+		return ""
+	}
+
+	prioritized := []string{
+		fmt.Sprintf("bgm_live_%s01.acb", id),
+		fmt.Sprintf("bgm_preview_%s01.acb", id),
+	}
+	for _, name := range prioritized {
+		candidate := filepath.Join(dir, name)
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+
+	any, _ := filepath.Glob(filepath.Join(dir, "*_"+id+"01.acb"))
+	for _, candidate := range any {
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func ensureAcbAudioForUsm(acbPath string) (string, bool) {
+	if !acbToolsAvailable() {
+		return "", false
+	}
+	outDir := filepath.Join(previewRoot, "usm-audio")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", false
+	}
+	base := strings.TrimSuffix(filepath.Base(acbPath), filepath.Ext(acbPath))
+	outPath := filepath.Join(outDir, sanitizeLabel(base)+".m4a")
+	if isFresh(outPath, acbPath) {
+		return outPath, true
+	}
+
+	subsong := 0
+	if detectStreamCount(acbPath) > 1 {
+		subsong = 1
+	}
+	if !encodeAcbToM4A(acbPath, outPath, subsong) {
+		return "", false
+	}
+	return outPath, true
+}
+
+func encodeAcbToM4A(inputPath string, outPath string, subsong int) bool {
+	tmpDir, err := os.MkdirTemp("", "hailstorm-acb-usm")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(tmpDir)
+
+	loopOnce := detectLoop(inputPath, subsong)
+	tmpWav := filepath.Join(tmpDir, "preview.wav")
+	vgmArgs := []string{}
+	if subsong > 0 {
+		vgmArgs = append(vgmArgs, "-s", fmt.Sprintf("%d", subsong))
+	}
+	if loopOnce {
+		vgmArgs = append(vgmArgs, "-L")
+	}
+	vgmArgs = append(vgmArgs, inputPath, "-o", tmpWav)
+	if err := exec.Command("vgmstream-cli", vgmArgs...).Run(); err != nil {
+		return false
+	}
+
 	if err := exec.Command(
 		"ffmpeg",
 		"-hide_banner",
@@ -630,11 +898,14 @@ func transcodeUsmToMp4(inputPath string, outPath string) bool {
 		"error",
 		"-y",
 		"-i",
-		inputPath,
-		"-movflags",
-		"+faststart",
+		tmpWav,
+		"-vn",
 		"-c:a",
 		"aac",
+		"-b:a",
+		"192k",
+		"-movflags",
+		"+faststart",
 		outPath,
 	).Run(); err != nil {
 		return false

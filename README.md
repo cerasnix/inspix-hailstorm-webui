@@ -58,6 +58,12 @@ are available:
 - USM video preview (`.usm`): requires `ffmpeg` in `PATH`.
   WebUI auto transcodes to MP4 and caches under `cache/webui-preview/usm`
   (direct `.usm`) or next to exported files for AssetRipper outputs.
+  USM often has no audio stream; if `vgmstream-cli` is also available, WebUI
+  will try to extract companion audio from matching `bgm_live_*.acb` and mux it
+  into the preview MP4.
+  For quality/size efficiency, WebUI first tries stream-copy muxing
+  (`h264 copy + aac copy` with timestamp fix). It falls back to
+  `libx264` re-encode only when remux fails.
 - Unity assetbundle preview: set `ASSETRIPPER_DIR` to your
   AssetRipper release folder (containing `AssetRipper.GUI.Free`).
   Inspix-hailstorm will start AssetRipper in headless mode and call its
@@ -68,6 +74,7 @@ are available:
     environment before launching the WebUI, and the binary exists.
   - ACB audio preview: `vgmstream-cli` and `ffmpeg` are available in `PATH`.
   - USM video preview: `ffmpeg` is available in `PATH`.
+    For auto companion audio, `vgmstream-cli` is also needed.
 
 Example (set AssetRipper directory):
 
@@ -103,6 +110,11 @@ USM video preview
    to generate `cache/webui-preview/usm/<label>.mp4`.
 3) For `.usm` files exported from AssetRipper inside assetbundle output,
    WebUI will auto-generate `<file>.usm.preview.mp4` next to the source file.
+4) If a matching `bgm_live_<id>01.acb` (or fallback `bgm_preview_<id>01.acb`)
+   exists and `vgmstream-cli` is available, preview generation will extract
+   audio from ACB and mux it into the MP4.
+5) If output size is much larger than source USM + companion audio, remux likely
+   failed and fallback `libx264` path was used for compatibility.
 
 ### Docker
 

@@ -203,7 +203,9 @@ function renderPreviewActions(preview, label) {
     button.textContent = "Exporting...";
     try {
       const res = await fetch(
-        `/api/entry/preview/export?label=${encodeURIComponent(label)}`,
+        `/api/entry/preview/export?label=${encodeURIComponent(
+          label
+        )}&force=1`,
         { method: "POST" }
       );
       if (!res.ok) {
