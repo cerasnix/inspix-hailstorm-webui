@@ -7,92 +7,8 @@
   </div>
 </section>
 
-<section class="panel-grid view-grid">
-  <div class="panel-card">
-    <div class="panel-header">
-      <h2 data-i18n="view.metadata">Metadata</h2>
-    </div>
-    <table class="table table-borderless meta-table">
-      <tbody>
-        <tr>
-          <th data-i18n="view.label">Label</th>
-          <td id="metaLabel">-</td>
-        </tr>
-        <tr>
-          <th data-i18n="search.field.type">Type</th>
-          <td id="metaType">-</td>
-        </tr>
-        <tr>
-          <th data-i18n="view.resource">Resource</th>
-          <td id="metaResource">-</td>
-        </tr>
-        <tr>
-          <th data-i18n="view.size">Size</th>
-          <td id="metaSize">-</td>
-        </tr>
-        <tr>
-          <th data-i18n="view.checksum">Checksum</th>
-          <td id="metaChecksum">-</td>
-        </tr>
-        <tr>
-          <th data-i18n="view.seed">Seed</th>
-          <td id="metaSeed">-</td>
-        </tr>
-        <tr>
-          <th data-i18n="view.priority">Priority</th>
-          <td id="metaPriority">-</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="panel-card">
-    <div class="panel-header">
-      <h2 data-i18n="view.files">Files</h2>
-    </div>
-    <div class="file-actions">
-      <a
-        id="downloadRaw"
-        class="btn btn-outline-dark w-100"
-        href="#"
-        data-i18n="view.downloadRaw"
-      >
-        Download raw
-      </a>
-      <a
-        id="downloadPlain"
-        class="btn btn-primary w-100"
-        href="#"
-        data-i18n="view.downloadPlain"
-      >
-        Download plain
-      </a>
-      <a
-        id="downloadYaml"
-        class="btn btn-outline-dark w-100"
-        href="#"
-        data-i18n="view.downloadYaml"
-      >
-        Download YAML
-      </a>
-    </div>
-      <div class="file-meta">
-        <div>
-          <span class="badge" data-i18n="view.raw">Raw</span>
-          <span id="rawStatus">-</span>
-        </div>
-        <div>
-          <span class="badge" data-i18n="view.plain">Plain</span>
-          <span id="plainStatus">-</span>
-        </div>
-        <div>
-          <span class="badge" data-i18n="view.yaml">YAML</span>
-          <span id="yamlStatus">-</span>
-        </div>
-      </div>
-  </div>
-
-  <div class="panel-card">
+<section class="view-workspace">
+  <div class="panel-card view-preview-card">
     <div class="panel-header">
       <h2 data-i18n="view.preview">Preview</h2>
     </div>
@@ -108,7 +24,8 @@
       <div id="previewExportHint" class="text-muted"></div>
       <div class="preview-config text-muted">
         <div data-i18n="view.previewConfigAssetbundle">
-          Assetbundle export: set ASSETRIPPER_DIR to the AssetRipper folder.
+          Assetbundle export: set assetRipperDir in webui/config/config.json.
+          Fallback: export ASSETRIPPER_DIR=/path/to/AssetRipper
         </div>
         <div data-i18n="view.previewConfigService">
           Inspix-hailstorm will start AssetRipper headless and call its export API.
@@ -133,27 +50,146 @@
       </div>
     </div>
   </div>
+
+  <div class="view-side-stack">
+    <div class="panel-card">
+      <div class="panel-header">
+        <h2 data-i18n="view.metadata">Metadata</h2>
+      </div>
+      <table class="table table-borderless meta-table">
+        <tbody>
+          <tr>
+            <th data-i18n="view.label">Label</th>
+            <td id="metaLabel">-</td>
+          </tr>
+          <tr>
+            <th data-i18n="search.field.type">Type</th>
+            <td id="metaType">-</td>
+          </tr>
+          <tr>
+            <th data-i18n="view.resource">Resource</th>
+            <td id="metaResource">-</td>
+          </tr>
+          <tr>
+            <th data-i18n="view.size">Size</th>
+            <td id="metaSize">-</td>
+          </tr>
+          <tr>
+            <th data-i18n="view.checksum">Checksum</th>
+            <td id="metaChecksum">-</td>
+          </tr>
+          <tr>
+            <th data-i18n="view.seed">Seed</th>
+            <td id="metaSeed">-</td>
+          </tr>
+          <tr>
+            <th data-i18n="view.priority">Priority</th>
+            <td id="metaPriority">-</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-header">
+        <h2 data-i18n="view.versionDiff">Version diff</h2>
+      </div>
+      <div class="view-diff-toolbar">
+        <div class="control-group">
+          <label for="viewDiffFrom" data-i18n="view.diffFrom">From version</label>
+          <select id="viewDiffFrom" class="form-select">
+            <option value="">-</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="viewDiffTo" data-i18n="view.diffTo">To version</label>
+          <select id="viewDiffTo" class="form-select">
+            <option value="">-</option>
+          </select>
+        </div>
+        <div class="control-group view-diff-action">
+          <label>&nbsp;</label>
+          <button id="viewDiffApply" class="btn btn-outline-dark" type="button" data-i18n="view.diffCompare">
+            Compare
+          </button>
+        </div>
+      </div>
+      <div id="viewDiffHint" class="text-muted">-</div>
+      <div class="view-diff-status">
+        <span id="viewDiffStatus" class="badge badge-dark">-</span>
+      </div>
+      <div id="viewDiffDetail" class="view-diff-detail text-muted">-</div>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-header">
+        <h2 data-i18n="view.files">Files</h2>
+      </div>
+      <div class="file-actions">
+        <a
+          id="downloadRaw"
+          class="btn btn-outline-dark w-100"
+          href="#"
+          data-i18n="view.downloadRaw"
+        >
+          Download raw
+        </a>
+        <a
+          id="downloadPlain"
+          class="btn btn-primary w-100"
+          href="#"
+          data-i18n="view.downloadPlain"
+        >
+          Download plain
+        </a>
+        <a
+          id="downloadYaml"
+          class="btn btn-outline-dark w-100"
+          href="#"
+          data-i18n="view.downloadYaml"
+        >
+          Download YAML
+        </a>
+      </div>
+      <div class="file-meta">
+        <div>
+          <span class="badge" data-i18n="view.raw">Raw</span>
+          <span id="rawStatus">-</span>
+        </div>
+        <div>
+          <span class="badge" data-i18n="view.plain">Plain</span>
+          <span id="plainStatus">-</span>
+        </div>
+        <div>
+          <span class="badge" data-i18n="view.yaml">YAML</span>
+          <span id="yamlStatus">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
 </section>
 
-<section class="panel-card">
-  <div class="panel-header">
-    <h2 data-i18n="view.dependencies">Dependencies</h2>
+<section class="view-taxonomy-grid">
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2 data-i18n="view.dependencies">Dependencies</h2>
+    </div>
+    <div id="depList" class="pill-grid">No dependencies.</div>
   </div>
-  <div id="depList" class="pill-grid">No dependencies.</div>
-</section>
 
-<section class="panel-card">
-  <div class="panel-header">
-    <h2 data-i18n="view.contentTypes">Content types</h2>
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2 data-i18n="view.contentTypes">Content types</h2>
+    </div>
+    <div id="contentList" class="pill-grid">None.</div>
   </div>
-  <div id="contentList" class="pill-grid">None.</div>
-</section>
 
-<section class="panel-card">
-  <div class="panel-header">
-    <h2 data-i18n="view.categories">Categories</h2>
+  <div class="panel-card">
+    <div class="panel-header">
+      <h2 data-i18n="view.categories">Categories</h2>
+    </div>
+    <div id="categoryList" class="pill-grid">None.</div>
   </div>
-  <div id="categoryList" class="pill-grid">None.</div>
 </section>
 
 <script>

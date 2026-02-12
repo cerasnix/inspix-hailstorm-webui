@@ -15,6 +15,84 @@
   </div>
 </section>
 
+<section class="panel-card master-diff-card">
+  <div class="panel-header">
+    <h2 data-i18n="master.diffTitle">Catalog diff by version</h2>
+    <button
+      id="diffReloadVersions"
+      class="btn btn-outline-dark btn-sm"
+      data-i18n="master.diffReload"
+      type="button"
+    >
+      Reload versions
+    </button>
+  </div>
+
+  <div class="master-diff-toolbar">
+    <div class="control-group">
+      <label for="diffFromVersion" data-i18n="master.fromVersion">From version</label>
+      <select id="diffFromVersion" class="form-select"></select>
+    </div>
+    <div class="control-group">
+      <label for="diffToVersion" data-i18n="master.toVersion">To version</label>
+      <select id="diffToVersion" class="form-select"></select>
+    </div>
+    <div class="control-group">
+      <label for="diffStatusFilter" data-i18n="master.diffStatus">Status</label>
+      <select id="diffStatusFilter" class="form-select">
+        <option value="all" data-i18n="master.diffStatusAll">All</option>
+        <option value="modified" data-i18n="master.diffStatusModified">Modified</option>
+        <option value="added" data-i18n="master.diffStatusAdded">Added</option>
+        <option value="removed" data-i18n="master.diffStatusRemoved">Removed</option>
+      </select>
+    </div>
+    <div class="control-group master-diff-search">
+      <label for="diffFilter" data-i18n="master.diffFilter">Label filter</label>
+      <input
+        id="diffFilter"
+        class="form-control"
+        type="text"
+        data-i18n-placeholder="master.diffFilterPlaceholder"
+      />
+    </div>
+    <div class="control-group master-diff-action">
+      <label>&nbsp;</label>
+      <button
+        id="diffRun"
+        class="btn btn-primary"
+        data-i18n="master.diffCompare"
+        type="button"
+      >
+        Compare
+      </button>
+    </div>
+  </div>
+
+  <div class="master-diff-summary" id="diffSummary">
+    <div class="stat-card">
+      <span class="stat-label" data-i18n="master.diffTotal">Total</span>
+      <span id="diffTotal" class="stat-value">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label" data-i18n="master.diffModified">Modified</span>
+      <span id="diffModified" class="stat-value">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label" data-i18n="master.diffAdded">Added</span>
+      <span id="diffAdded" class="stat-value">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label" data-i18n="master.diffRemoved">Removed</span>
+      <span id="diffRemoved" class="stat-value">0</span>
+    </div>
+  </div>
+
+  <div id="diffHint" class="text-muted">Select versions to compare.</div>
+  <div id="diffList" class="list-shell diff-list" data-i18n="master.diffEmpty">
+    No diff data.
+  </div>
+</section>
+
 <section class="panel-grid master-grid">
   <div class="panel-card">
     <div class="panel-header">

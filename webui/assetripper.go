@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"vertesan/hailstorm/runtimecfg"
 )
 
 const assetRipperDirEnv = "ASSETRIPPER_DIR"
@@ -30,7 +32,7 @@ type AssetRipperService struct {
 var assetRipperService = &AssetRipperService{}
 
 func assetRipperConfigured() bool {
-	return strings.TrimSpace(os.Getenv(assetRipperDirEnv)) != ""
+	return configuredAssetRipperDir() != ""
 }
 
 func ensureAssetRipperRunning() error {
@@ -48,7 +50,7 @@ func (s *AssetRipperService) EnsureRunning() error {
 }
 
 func (s *AssetRipperService) ensureRunningLocked() error {
-	dir := strings.TrimSpace(os.Getenv(assetRipperDirEnv))
+	dir := configuredAssetRipperDir()
 	if dir == "" {
 		return errors.New("assetripper dir not configured")
 	}
@@ -199,4 +201,13 @@ func absPath(path string) string {
 		return path
 	}
 	return abs
+}
+
+func configuredAssetRipperDir() string {
+	if cfg, err := runtimecfg.Load(); err == nil {
+		if dir := strings.TrimSpace(cfg.AssetRipperDir); dir != "" {
+			return dir
+		}
+	}
+	return strings.TrimSpace(os.Getenv(assetRipperDirEnv))
 }

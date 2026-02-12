@@ -30,6 +30,8 @@ masterdata/
 masterdataYaml/
 hailstorm
 secrets/
+webui/config/*.json
+!webui/config/config.example.json
 .vscode
 .env.local
 acb_to_mp3_inplace.py

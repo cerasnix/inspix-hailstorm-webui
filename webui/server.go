@@ -93,6 +93,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/entry/yaml", s.handleEntryYaml)
 	mux.HandleFunc("/api/masterdata", s.handleMasterList)
 	mux.HandleFunc("/api/masterdata/file", s.handleMasterFile)
+	mux.HandleFunc("/api/masterdata/versions", s.handleMasterVersions)
+	mux.HandleFunc("/api/masterdata/diff", s.handleMasterDiff)
+	mux.HandleFunc("/api/masterdata/diff/lookup", s.handleMasterDiffLookup)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/sse/tasks/", s.handleTaskStream)
 
@@ -212,6 +215,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	entries := s.catalog.Entries()
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
 	field := strings.TrimSpace(r.URL.Query().Get("field"))
+	withModTime := strings.TrimSpace(r.URL.Query().Get("withModTime")) == "1"
 	filtered := filterEntries(entries, query, field)
 
 	type item struct {
@@ -221,10 +225,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Size         uint64 `json:"size"`
 		ResourceType uint32 `json:"resourceType"`
 		RealName     string `json:"realName"`
+		ModifiedAt   int64  `json:"modifiedAt,omitempty"`
 	}
 
 	resp := make([]item, 0, len(filtered))
 	for _, entry := range filtered {
+		modifiedAt := int64(0)
+		if withModTime {
+			modifiedAt = entryModifiedAtUnix(entry)
+		}
 		resp = append(resp, item{
 			Label:        entry.StrLabelCrc,
 			Name:         entry.StrLabelCrc,
@@ -232,6 +241,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			Size:         entry.Size,
 			ResourceType: entry.ResourceType,
 			RealName:     entry.RealName,
+			ModifiedAt:   modifiedAt,
 		})
 	}
 	writeJSON(w, resp)
@@ -535,6 +545,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		case "", "update":
 		case "dbonly":
 			opts.DbOnly = true
+		case "catalog":
+			opts.CatalogOnly = true
 		case "convert":
 			opts.Convert = true
 		case "master":
@@ -734,4 +746,21 @@ func dirExists(path string) bool {
 		return false
 	}
 	return info.IsDir()
+}
+
+func entryModifiedAtUnix(entry manifest.Entry) int64 {
+	plainPath := plainAssetPath(entry)
+	if info, err := os.Stat(plainPath); err == nil && !info.IsDir() {
+		return info.ModTime().Unix()
+	}
+
+	rawPath, ok := rawAssetPath(entry)
+	if !ok {
+		return 0
+	}
+	info, err := os.Stat(rawPath)
+	if err != nil || info.IsDir() {
+		return 0
+	}
+	return info.ModTime().Unix()
 }

@@ -213,6 +213,7 @@ function renderTaskModeDesc(mode) {
   const keyMap = {
     update: "home.taskDesc.update",
     dbonly: "home.taskDesc.dbonly",
+    catalog: "home.taskDesc.catalog",
     convert: "home.taskDesc.convert",
     master: "home.taskDesc.master",
     analyze: "home.taskDesc.analyze",

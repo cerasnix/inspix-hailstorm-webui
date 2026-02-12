@@ -9,7 +9,18 @@ let state = {
   tags: [],
   type: "",
   view: "grid",
+  diffFrom: "",
+  diffTo: "",
+  diffApplied: false,
+  diffStatus: "all",
 };
+
+let diffLookupToken = 0;
+let diffFilterToken = 0;
+let diffStatusCacheKey = "";
+let diffStatusCache = new Map();
+let perPageTouched = false;
+const listViewAutoPerPage = 72;
 
 function entryTokens(entry) {
   if (!entry._tokens) {
@@ -26,8 +37,25 @@ function sortEntries() {
     let left = a[sortBy];
     let right = b[sortBy];
     if (sortBy === "label") {
-      left = left.toLowerCase();
-      right = right.toLowerCase();
+      left = (left || "").toLowerCase();
+      right = (right || "").toLowerCase();
+    } else if (sortBy === "modifiedAt") {
+      left = Number(left || 0);
+      right = Number(right || 0);
+      const leftMissing = left <= 0;
+      const rightMissing = right <= 0;
+      if (leftMissing && !rightMissing) {
+        return 1;
+      }
+      if (!leftMissing && rightMissing) {
+        return -1;
+      }
+    } else if (typeof left === "string" || typeof right === "string") {
+      left = (left || "").toString().toLowerCase();
+      right = (right || "").toString().toLowerCase();
+    } else {
+      left = Number(left || 0);
+      right = Number(right || 0);
     }
     if (left < right) {
       return sortDir === "asc" ? -1 : 1;
@@ -35,8 +63,182 @@ function sortEntries() {
     if (left > right) {
       return sortDir === "asc" ? 1 : -1;
     }
+    const tieLabelA = (a.label || "").toLowerCase();
+    const tieLabelB = (b.label || "").toLowerCase();
+    if (tieLabelA < tieLabelB) {
+      return -1;
+    }
+    if (tieLabelA > tieLabelB) {
+      return 1;
+    }
     return 0;
   });
+}
+
+function needsModifiedTime() {
+  const sortBy = document.getElementById("sortBy");
+  return sortBy && sortBy.value === "modifiedAt";
+}
+
+function formatModifiedAt(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString();
+}
+
+function diffSelectionValid() {
+  return Boolean(
+    state.diffFrom &&
+      state.diffTo &&
+      state.diffFrom !== state.diffTo
+  );
+}
+
+function diffEnabled() {
+  return diffSelectionValid() && Boolean(state.diffApplied);
+}
+
+function currentDiffKey() {
+  if (!diffSelectionValid()) {
+    return "";
+  }
+  return `${state.diffFrom}::${state.diffTo}`;
+}
+
+function resetDiffCacheIfNeeded() {
+  const nextKey = currentDiffKey();
+  if (nextKey === diffStatusCacheKey) {
+    return;
+  }
+  diffStatusCacheKey = nextKey;
+  diffStatusCache = new Map();
+}
+
+function statusMatchesFilter(status) {
+  if (state.diffStatus === "all") {
+    return true;
+  }
+  return status === state.diffStatus;
+}
+
+async function ensureDiffStatuses(labels) {
+  if (!diffEnabled()) {
+    return { complete: true, failedBatches: 0 };
+  }
+  resetDiffCacheIfNeeded();
+  const unique = Array.from(new Set(labels.filter(Boolean)));
+  const missing = unique.filter((label) => !diffStatusCache.has(label));
+  if (!missing.length) {
+    return { complete: true, failedBatches: 0 };
+  }
+
+  const batchSize = 500;
+  const maxConcurrent = 6;
+  const batches = [];
+  for (let i = 0; i < missing.length; i += batchSize) {
+    batches.push(missing.slice(i, i + batchSize));
+  }
+
+  let failedBatches = 0;
+  for (let i = 0; i < batches.length; i += maxConcurrent) {
+    const slice = batches.slice(i, i + maxConcurrent);
+    const results = await Promise.all(
+      slice.map(async (chunk) => {
+        try {
+          const data = await App.apiPost("/api/masterdata/diff/lookup", {
+            from: state.diffFrom,
+            to: state.diffTo,
+            labels: chunk,
+          });
+          const items = data.items || {};
+          chunk.forEach((label) => {
+            diffStatusCache.set(label, (items[label] || {}).status || "missing");
+          });
+          return true;
+        } catch (err) {
+          chunk.forEach((label) => {
+            if (!diffStatusCache.has(label)) {
+              diffStatusCache.set(label, "error");
+            }
+          });
+          return false;
+        }
+      })
+    );
+    failedBatches += results.filter((ok) => !ok).length;
+  }
+
+  return { complete: failedBatches === 0, failedBatches };
+}
+
+function diffLabelFromStatus(status) {
+  if (status === "unchanged") {
+    return I18n.t("search.diffUnchanged");
+  }
+  if (status === "missing") {
+    return I18n.t("search.diffMissing");
+  }
+  const key = `master.diffStatus.${status || "unknown"}`;
+  return I18n.t(key);
+}
+
+function applyDiffChip(node, status) {
+  if (!node) {
+    return;
+  }
+  const normalized = status || "unknown";
+  node.className = `badge search-diff-chip search-diff-${normalized}`;
+  node.textContent = diffLabelFromStatus(normalized);
+}
+
+async function refreshVisibleEntryDiffs(pageEntries) {
+  const chips = document.querySelectorAll(".search-diff-chip[data-label]");
+  if (!chips.length) {
+    return;
+  }
+
+  if (!diffEnabled()) {
+    chips.forEach((node) => {
+      node.className = "badge search-diff-chip search-diff-disabled";
+      node.textContent = I18n.t("search.diffDisabled");
+    });
+    return;
+  }
+
+  chips.forEach((node) => {
+    node.className = "badge search-diff-chip search-diff-loading";
+    node.textContent = I18n.t("search.diffLoading");
+  });
+
+  const labels = pageEntries.map((entry) => entry.label).filter(Boolean);
+  if (!labels.length) {
+    return;
+  }
+
+  const token = ++diffLookupToken;
+  try {
+    await ensureDiffStatuses(labels);
+    if (token !== diffLookupToken) {
+      return;
+    }
+    chips.forEach((node) => {
+      const label = node.dataset.label;
+      applyDiffChip(node, diffStatusCache.get(label) || "missing");
+    });
+  } catch (err) {
+    if (token !== diffLookupToken) {
+      return;
+    }
+    chips.forEach((node) => {
+      node.className = "badge search-diff-chip search-diff-error";
+      node.textContent = I18n.t("search.diffFailed");
+    });
+  }
 }
 
 function renderResults() {
@@ -52,26 +254,50 @@ function renderResults() {
   pageEntries.forEach((entry) => {
     const card = document.createElement("div");
     card.className = "entry-card";
-    const viewLink = I18n.withLang(
-      `/view?label=${encodeURIComponent(entry.label)}`
-    );
+    const viewParams = new URLSearchParams();
+    viewParams.set("label", entry.label);
+    if (state.diffFrom) {
+      viewParams.set("diffFrom", state.diffFrom);
+    }
+    if (state.diffTo) {
+      viewParams.set("diffTo", state.diffTo);
+    }
+    const viewLink = I18n.withLang(`/view?${viewParams.toString()}`);
+    const extraMetaParts = [];
+    if (entry.realName) {
+      extraMetaParts.push(entry.realName);
+    }
+    const modifiedText = formatModifiedAt(entry.modifiedAt);
+    if (modifiedText) {
+      extraMetaParts.push(`${I18n.t("search.modifiedShort")}: ${modifiedText}`);
+    }
     card.innerHTML = `
       <div class="entry-title">${entry.label}</div>
       <div class="entry-meta">${entry.type} • ${App.formatBytes(entry.size)}</div>
       ${
-        entry.realName
-          ? `<div class="entry-meta entry-meta-secondary">${entry.realName}</div>`
+        extraMetaParts.length
+          ? `<div class="entry-meta entry-meta-secondary">${extraMetaParts.join(
+              " • "
+            )}</div>`
           : ""
       }
       <div class="entry-footer">
-        <span class="badge">${entry.resourceType}</span>
-        <a class="btn btn-sm btn-outline-dark" href="${viewLink}">${I18n.t("search.open")}</a>
+        <div class="entry-badges">
+          <span class="badge">${entry.resourceType}</span>
+          <span class="badge search-diff-chip search-diff-disabled" data-label="${
+            entry.label
+          }">${I18n.t("search.diffDisabled")}</span>
+        </div>
+        <a class="btn btn-sm btn-outline-dark" href="${viewLink}" target="_blank" rel="noopener noreferrer">${I18n.t(
+          "search.open"
+        )}</a>
       </div>
     `;
     container.appendChild(card);
   });
 
   renderPagination(totalPages);
+  refreshVisibleEntryDiffs(pageEntries);
   document.getElementById("searchSummary").textContent = I18n.t(
     "search.entries",
     { count: searchEntries.length }
@@ -114,7 +340,8 @@ function renderPagination(totalPages) {
   );
 }
 
-function applyFilters() {
+async function applyFilters() {
+  const token = ++diffFilterToken;
   let filtered = [...allEntries];
 
   if (state.type) {
@@ -168,6 +395,19 @@ function applyFilters() {
     }
   }
 
+  if (diffEnabled() && state.diffStatus !== "all") {
+    await ensureDiffStatuses(filtered.map((entry) => entry.label));
+    if (token !== diffFilterToken) {
+      return;
+    }
+    filtered = filtered.filter((entry) =>
+      statusMatchesFilter(diffStatusCache.get(entry.label) || "missing")
+    );
+  }
+
+  if (token !== diffFilterToken) {
+    return;
+  }
   searchEntries = filtered;
   sortEntries();
   renderResults();
@@ -197,6 +437,18 @@ function updateUrl() {
   if (state.view && state.view !== "grid") {
     params.set("view", state.view);
   }
+  if (state.diffFrom) {
+    params.set("diffFrom", state.diffFrom);
+  }
+  if (state.diffTo) {
+    params.set("diffTo", state.diffTo);
+  }
+  if (state.diffApplied && diffSelectionValid()) {
+    params.set("diff", "1");
+  }
+  if (state.diffStatus && state.diffStatus !== "all") {
+    params.set("diffStatus", state.diffStatus);
+  }
   const next = params.toString();
   window.history.replaceState(
     {},
@@ -214,13 +466,163 @@ async function loadSearch() {
   if (state.field && state.field !== "all") {
     params.set("field", state.field);
   }
+  if (needsModifiedTime()) {
+    params.set("withModTime", "1");
+  }
   const data = await App.apiGet(`/api/search?${params.toString()}`);
   allEntries = data;
   if (window.FilterUtils && FilterUtils.loadConfig) {
     await FilterUtils.loadConfig();
   }
   buildTypeFilter();
-  applyFilters();
+  await applyFilters();
+}
+
+function syncDiffControls() {
+  const select = document.getElementById("diffStatus");
+  const applyButton = document.getElementById("diffApply");
+  const selected = diffSelectionValid();
+  const enabled = diffEnabled();
+
+  if (!enabled) {
+    state.diffStatus = "all";
+    if (select) {
+      select.value = "all";
+    }
+  }
+  if (select) {
+    select.disabled = !enabled;
+  }
+  if (applyButton) {
+    applyButton.disabled = !selected;
+  }
+}
+
+function resetDiffCache() {
+  diffStatusCacheKey = "";
+  diffStatusCache = new Map();
+}
+
+async function applyDiffSelection(forceRefresh = false) {
+  if (!diffSelectionValid()) {
+    state.diffApplied = false;
+    syncDiffControls();
+    updateUrl();
+    await applyFilters();
+    return;
+  }
+
+  state.diffApplied = true;
+  if (forceRefresh) {
+    resetDiffCache();
+  } else {
+    resetDiffCacheIfNeeded();
+  }
+  syncDiffControls();
+  updateUrl();
+  await applyFilters();
+}
+
+function renderDiffVersionSelects(versions, current) {
+  const fromSelect = document.getElementById("diffFromVersion");
+  const toSelect = document.getElementById("diffToVersion");
+  if (!fromSelect || !toSelect) {
+    return;
+  }
+
+  fromSelect.innerHTML = "";
+  toSelect.innerHTML = "";
+  const disabledOption = document.createElement("option");
+  disabledOption.value = "";
+  disabledOption.textContent = I18n.t("search.diffDisabled");
+  fromSelect.appendChild(disabledOption.cloneNode(true));
+  toSelect.appendChild(disabledOption);
+
+  if (!versions.length) {
+    fromSelect.disabled = true;
+    toSelect.disabled = true;
+    state.diffFrom = "";
+    state.diffTo = "";
+    state.diffApplied = false;
+    syncDiffControls();
+    return;
+  }
+
+  const sorted = [...versions].sort((a, b) => b.version.localeCompare(a.version));
+  sorted.forEach((item) => {
+    const label = item.current
+      ? `${item.version} (${I18n.t("master.currentTag")})`
+      : item.version;
+    const fromOpt = document.createElement("option");
+    fromOpt.value = item.version;
+    fromOpt.textContent = label;
+    const toOpt = document.createElement("option");
+    toOpt.value = item.version;
+    toOpt.textContent = label;
+    fromSelect.appendChild(fromOpt);
+    toSelect.appendChild(toOpt);
+  });
+
+  fromSelect.disabled = false;
+  toSelect.disabled = false;
+
+  const hasFrom = sorted.some((item) => item.version === state.diffFrom);
+  const hasTo = sorted.some((item) => item.version === state.diffTo);
+  if (!hasTo) {
+    state.diffTo = current || sorted[0].version;
+  }
+  if (!hasFrom) {
+    const fallback = sorted.find((item) => item.version !== state.diffTo);
+    state.diffFrom = fallback ? fallback.version : "";
+  }
+
+  fromSelect.value = state.diffFrom || "";
+  toSelect.value = state.diffTo || "";
+  if (!diffSelectionValid()) {
+    state.diffApplied = false;
+  }
+  syncDiffControls();
+}
+
+async function loadDiffVersions() {
+  const fromSelect = document.getElementById("diffFromVersion");
+  const toSelect = document.getElementById("diffToVersion");
+  if (!fromSelect || !toSelect) {
+    return;
+  }
+  try {
+    const data = await App.apiGet("/api/masterdata/versions");
+    const versions = Array.isArray(data.versions) ? data.versions : [];
+    renderDiffVersionSelects(versions, data.current || "");
+    fromSelect.onchange = () => {
+      state.diffFrom = fromSelect.value;
+      state.diffApplied = false;
+      resetDiffCacheIfNeeded();
+      syncDiffControls();
+      updateUrl();
+      applyFilters().catch(() => {});
+    };
+    toSelect.onchange = () => {
+      state.diffTo = toSelect.value;
+      state.diffApplied = false;
+      resetDiffCacheIfNeeded();
+      syncDiffControls();
+      updateUrl();
+      applyFilters().catch(() => {});
+    };
+    if (allEntries.length > 0) {
+      applyFilters().catch(() => {});
+    }
+  } catch (err) {
+    fromSelect.innerHTML = `<option value="">${I18n.t("search.diffUnavailable")}</option>`;
+    toSelect.innerHTML = `<option value="">${I18n.t("search.diffUnavailable")}</option>`;
+    fromSelect.disabled = true;
+    toSelect.disabled = true;
+    state.diffFrom = "";
+    state.diffTo = "";
+    state.diffApplied = false;
+    syncDiffControls();
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -231,6 +633,8 @@ document.addEventListener("DOMContentLoaded", () => {
       : Promise.resolve();
   filtersReady.then(renderFilterChips);
   setupSearchControls();
+  syncDiffControls();
+  loadDiffVersions();
   document.getElementById("searchQuery").value = state.query;
   document.getElementById("searchField").value = state.field;
   updateViewButtons();
@@ -241,6 +645,14 @@ document.addEventListener("DOMContentLoaded", () => {
     setViewMode("list");
   });
   document.getElementById("sortBy").addEventListener("change", () => {
+    if (needsModifiedTime()) {
+      loadSearch().catch(() => {
+        document.getElementById("searchSummary").textContent = I18n.t(
+          "search.failed"
+        );
+      });
+      return;
+    }
     sortEntries();
     renderResults();
   });
@@ -249,9 +661,11 @@ document.addEventListener("DOMContentLoaded", () => {
     renderResults();
   });
   document.getElementById("entriesPerPage").addEventListener("change", () => {
+    perPageTouched = true;
     currentPage = 1;
     renderResults();
   });
+  adjustPerPageForView(state.view);
   loadSearch().catch(() => {
     document.getElementById("searchSummary").textContent = I18n.t(
       "search.failed"
@@ -260,6 +674,24 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function setupSearchControls() {
+  const diffStatusSelect = document.getElementById("diffStatus");
+  const diffApplyButton = document.getElementById("diffApply");
+  if (diffStatusSelect) {
+    diffStatusSelect.value = state.diffStatus || "all";
+    diffStatusSelect.addEventListener("change", () => {
+      state.diffStatus = diffStatusSelect.value || "all";
+      currentPage = 1;
+      updateUrl();
+      applyFilters().catch(() => {});
+    });
+  }
+  if (diffApplyButton) {
+    diffApplyButton.addEventListener("click", () => {
+      currentPage = 1;
+      applyDiffSelection(true).catch(() => {});
+    });
+  }
+
   document.getElementById("searchApply").addEventListener("click", () => {
     state.query = document.getElementById("searchQuery").value.trim();
     state.field = document.getElementById("searchField").value;
@@ -275,9 +707,17 @@ function setupSearchControls() {
       tags: [],
       type: "",
       view: state.view,
+      diffFrom: state.diffFrom,
+      diffTo: state.diffTo,
+      diffApplied: false,
+      diffStatus: "all",
     };
     document.getElementById("searchQuery").value = "";
     document.getElementById("searchField").value = "all";
+    if (diffStatusSelect) {
+      diffStatusSelect.value = "all";
+    }
+    syncDiffControls();
     updateUrl();
     loadSearch();
     renderFilterChips();
@@ -287,6 +727,24 @@ function setupSearchControls() {
       document.getElementById("searchApply").click();
     }
   });
+}
+
+function adjustPerPageForView(mode) {
+  const select = document.getElementById("entriesPerPage");
+  if (!select || mode !== "list" || perPageTouched) {
+    return;
+  }
+  const current = parseInt(select.value, 10);
+  if (!Number.isFinite(current) || current >= listViewAutoPerPage) {
+    return;
+  }
+  const target = Array.from(select.options).find(
+    (opt) => parseInt(opt.value, 10) >= listViewAutoPerPage
+  );
+  if (target) {
+    select.value = target.value;
+    currentPage = 1;
+  }
 }
 
 function hydrateStateFromUrl() {
@@ -301,6 +759,16 @@ function hydrateStateFromUrl() {
   state.tags = parseParamList(params.get("tags"));
   state.type = params.get("type") || "";
   state.view = params.get("view") || "grid";
+  state.diffFrom = params.get("diffFrom") || "";
+  state.diffTo = params.get("diffTo") || "";
+  state.diffApplied =
+    params.get("diff") === "1" ||
+    params.get("diff") === "true" ||
+    params.get("diff") === "on";
+  state.diffStatus = params.get("diffStatus") || "all";
+  if (!state.diffApplied && state.diffStatus !== "all" && diffSelectionValid()) {
+    state.diffApplied = true;
+  }
 }
 
 function parseParamList(value) {
@@ -348,7 +816,7 @@ function toggleFilter(group, key) {
     list.push(key);
   }
   updateUrl();
-  applyFilters();
+  applyFilters().catch(() => {});
   renderFilterChips();
 }
 
@@ -391,12 +859,14 @@ function buildTypeFilter() {
   select.onchange = () => {
     state.type = select.value;
     updateUrl();
-    applyFilters();
+    applyFilters().catch(() => {});
   };
 }
 
 function setViewMode(mode) {
   state.view = mode;
+  adjustPerPageForView(mode);
+  currentPage = 1;
   updateUrl();
   renderResults();
   updateViewButtons();

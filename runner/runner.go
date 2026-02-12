@@ -6,12 +6,14 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strings"
 
 	"vertesan/hailstorm/analyser"
 	"vertesan/hailstorm/manifest"
 	"vertesan/hailstorm/master"
 	"vertesan/hailstorm/network"
 	"vertesan/hailstorm/rich"
+	"vertesan/hailstorm/runtimecfg"
 	"vertesan/hailstorm/utils"
 )
 
@@ -30,6 +32,7 @@ const (
 
 type Options struct {
 	Analyze       bool
+	CatalogOnly   bool
 	DbOnly        bool
 	Force         bool
 	KeepRaw       bool
@@ -53,6 +56,7 @@ func Run(opts Options) (err error) {
 
 func ParseFlags() Options {
 	fAnalyze := flag.Bool("analyze", false, "Do code analysis and exit.")
+	fCatalogOnly := flag.Bool("catalog-only", false, "Fetch and parse catalog only, write version snapshot, and skip asset download/decrypt.")
 	fDbOnly := flag.Bool("dbonly", false, "Only download and decrypt DB files, put assets aside.")
 	fForce := flag.Bool("force", false, "Ignore current cached version and update caches.")
 	fKeepRaw := flag.Bool("keepraw", false, "Do not delete encrypted raw asset files after decrypting.")
@@ -66,6 +70,7 @@ func ParseFlags() Options {
 
 	return Options{
 		Analyze:       *fAnalyze,
+		CatalogOnly:   *fCatalogOnly,
 		DbOnly:        *fDbOnly,
 		Force:         *fForce,
 		KeepRaw:       *fKeepRaw,
@@ -84,6 +89,11 @@ func runUnsafe(opts Options) {
 		return
 	}
 
+	if opts.CatalogOnly {
+		runCatalogOnly(opts)
+		return
+	}
+
 	if opts.Convert {
 		runConvert()
 		return
@@ -99,10 +109,14 @@ func runUnsafe(opts Options) {
 			panic(err)
 		}
 	}
-	clientVersion := opts.ClientVersion
-	resInfo := opts.ResInfo
+	clientVersion, resInfo, fromConfig, err := runtimecfg.ResolvePair(opts.ClientVersion, opts.ResInfo)
+	if err != nil {
+		panic(err)
+	}
+	if fromConfig {
+		rich.Info("Using runtime config client/res values.")
+	}
 	if clientVersion == "" {
-		var err error
 		if clientVersion, err = network.GetPlayVersion(); err != nil {
 			panic(err)
 		}
@@ -117,8 +131,9 @@ func runUnsafe(opts Options) {
 			panic(err)
 		}
 	}
+	currentVersion := strings.TrimSpace(string(currentVer))
 
-	if !opts.Force && resInfo == string(currentVer) {
+	if !opts.Force && resInfo == currentVersion {
 		rich.Info("Nothing updated, will be stopping process.")
 		return
 	}
@@ -150,8 +165,14 @@ func runUnsafe(opts Options) {
 		}
 	}
 	rich.Info("Outdated catalog was renamed to '%s'.", CatalogJsonFilePrev)
+	if err := snapshotCatalogForVersion(currentVersion, CatalogJsonFilePrev); err != nil {
+		rich.Warning("Failed to snapshot previous catalog version %q: %v", currentVersion, err)
+	}
 
 	utils.WriteToJsonFile(catalog.Entries, CatalogJsonFile)
+	if err := snapshotCatalogForVersion(resInfo, CatalogJsonFile); err != nil {
+		rich.Warning("Failed to snapshot current catalog version %q: %v", resInfo, err)
+	}
 
 	oldEntries := []manifest.Entry{}
 	if err := utils.ReadFromJsonFile(CatalogJsonFilePrev, &oldEntries); err != nil {
@@ -239,6 +260,102 @@ func doAnalyze() {
 	rich.Info("Start analyzing code...")
 	analyser.Analyze()
 	rich.Info("Analysis completed.")
+}
+
+func runCatalogOnly(opts Options) {
+	explicitClient := strings.TrimSpace(opts.ClientVersion)
+	explicitRes := strings.TrimSpace(opts.ResInfo)
+
+	pairs := make([]runtimecfg.VersionPair, 0)
+	if explicitClient == "" && explicitRes == "" {
+		if cfg, err := runtimecfg.Load(); err == nil {
+			if cfg.ClientVersion != "" && cfg.ResInfo != "" {
+				pairs = append(pairs, runtimecfg.VersionPair{
+					ClientVersion: cfg.ClientVersion,
+					ResInfo:       cfg.ResInfo,
+				})
+			}
+			for _, pair := range cfg.VersionHistory {
+				pairs = append(pairs, pair)
+			}
+		}
+	}
+
+	if len(pairs) == 0 {
+		clientVersion, resInfo, fromConfig, err := runtimecfg.ResolvePair(explicitClient, explicitRes)
+		if err != nil {
+			panic(err)
+		}
+		if fromConfig {
+			rich.Info("Catalog-only mode: using runtime config client/res values.")
+		}
+		if clientVersion == "" {
+			if clientVersion, err = network.GetPlayVersion(); err != nil {
+				panic(err)
+			}
+		}
+		if resInfo == "" {
+			resInfo = network.Login(clientVersion)
+		}
+		pairs = append(pairs, runtimecfg.VersionPair{
+			ClientVersion: clientVersion,
+			ResInfo:       resInfo,
+		})
+	}
+
+	seen := make(map[string]struct{})
+	processed := 0
+	skipped := 0
+	for _, pair := range pairs {
+		clientVersion := strings.TrimSpace(pair.ClientVersion)
+		resInfo := strings.TrimSpace(pair.ResInfo)
+		if clientVersion == "" || resInfo == "" {
+			continue
+		}
+		key := clientVersion + "\x00" + resInfo
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		if !opts.Force && versionSnapshotExists(resInfo) {
+			rich.Info("Catalog snapshot for version %q already exists, skipping.", resInfo)
+			skipped++
+			continue
+		}
+
+		entries := fetchCatalogEntries(clientVersion, resInfo)
+		if err := writeCatalogSnapshotForVersion(resInfo, entries); err != nil {
+			panic(err)
+		}
+		rich.Info("Catalog-only mode: snapshot written for %q with %d entries.", resInfo, len(entries))
+		processed++
+	}
+	rich.Info("Catalog-only mode completed. processed=%d skipped=%d.", processed, skipped)
+}
+
+func fetchCatalogEntries(clientVersion string, resInfo string) []manifest.Entry {
+	rich.Info("Catalog-only mode: fetching manifest for %q.", resInfo)
+	mani := new(manifest.Manifest)
+	mani.Init(resInfo, clientVersion)
+
+	network.DownloadManifestSync(mani.RealName, ManifestSaveDir)
+	manifestPath := fmt.Sprintf("%v/%v", ManifestSaveDir, mani.RealName)
+	catalogFile, err := os.Open(manifestPath)
+	if err != nil {
+		panic(err)
+	}
+
+	catalog := new(manifest.Catalog)
+	catalog.Init(mani, catalogFile)
+
+	if err = catalogFile.Close(); err != nil {
+		panic(err)
+	}
+	if err = os.Remove(manifestPath); err != nil {
+		panic(err)
+	}
+	return catalog.Entries
 }
 
 func diff(catalog *manifest.Catalog, outDatedCatalog *manifest.Catalog) {

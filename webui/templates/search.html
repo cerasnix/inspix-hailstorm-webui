@@ -1,116 +1,162 @@
 {{ define "search.html" }}
-<section class="page-head">
+<section class="page-head search-page-head">
   <div>
     <p class="eyebrow" data-i18n="search.eyebrow">Catalog</p>
     <h1 class="page-title" data-i18n="search.title">Search results</h1>
-    <p
-      id="searchSummary"
-      class="page-subtitle"
-      data-i18n="search.loading"
-    >
-      Loading catalog...
-    </p>
+    <p class="page-subtitle" data-i18n="search.loading">Loading catalog...</p>
   </div>
 </section>
 
-<section class="panel-card search-filters">
-  <div class="search-bar">
-    <input
-      id="searchQuery"
-      class="form-control"
-      type="search"
-      placeholder="Search..."
-      data-i18n-placeholder="search.searchPlaceholder"
-    />
-    <select id="searchField" class="form-select">
-      <option value="all" data-i18n="search.field.all">All fields</option>
-      <option value="label" data-i18n="search.field.label">Label</option>
-      <option value="type" data-i18n="search.field.type">Type</option>
-      <option value="dependencies" data-i18n="search.field.deps">
-        Dependencies
-      </option>
-      <option value="content" data-i18n="search.field.content">
-        Content types
-      </option>
-      <option value="categories" data-i18n="search.field.categories">
-        Categories
-      </option>
-      <option value="realname" data-i18n="search.field.realname">Real name</option>
-    </select>
-    <button id="searchApply" class="btn btn-primary" data-i18n="search.searchButton">
-      Search
-    </button>
-    <button id="searchClear" class="btn btn-outline-dark" data-i18n="search.clear">
-      Clear
-    </button>
-  </div>
-  <div class="filter-block">
-    <span class="filter-title" data-i18n="home.filterMedia">Media</span>
-    <div id="mediaFilters" class="chip-row"></div>
-  </div>
-  <div class="filter-block">
-    <span class="filter-title" data-i18n="home.filterCharacter">Character</span>
-    <div id="characterFilters" class="chip-row"></div>
-  </div>
-  <div class="filter-block">
-    <span class="filter-title" data-i18n="search.filterTags">Tags</span>
-    <div id="tagFilters" class="chip-row"></div>
-  </div>
-  <div class="controls-row">
-    <div class="control-group">
-      <label data-i18n="search.typeLabel">Type</label>
-      <select id="typeFilter" class="form-select">
-        <option value="" data-i18n="search.all">All</option>
-      </select>
+<section class="search-layout">
+  <aside class="panel-card search-filters search-control-panel">
+    <div class="search-control-head">
+      <h2 data-i18n="home.quickFilters">Quick filters</h2>
     </div>
-    <div class="control-group">
-      <label data-i18n="search.sort">Sort</label>
-      <select id="sortBy" class="form-select">
+    <div class="search-bar">
+      <input
+        id="searchQuery"
+        class="form-control"
+        type="search"
+        placeholder="Search..."
+        data-i18n-placeholder="search.searchPlaceholder"
+      />
+      <select id="searchField" class="form-select">
+        <option value="all" data-i18n="search.field.all">All fields</option>
         <option value="label" data-i18n="search.field.label">Label</option>
-        <option value="size">Size</option>
+        <option value="type" data-i18n="search.field.type">Type</option>
+        <option value="dependencies" data-i18n="search.field.deps">
+          Dependencies
+        </option>
+        <option value="content" data-i18n="search.field.content">
+          Content types
+        </option>
+        <option value="categories" data-i18n="search.field.categories">
+          Categories
+        </option>
+        <option value="realname" data-i18n="search.field.realname">Real name</option>
       </select>
+      <button id="searchApply" class="btn btn-primary" data-i18n="search.searchButton">
+        Search
+      </button>
+      <button id="searchClear" class="btn btn-outline-dark" data-i18n="search.clear">
+        Clear
+      </button>
     </div>
-    <div class="control-group">
-      <label data-i18n="search.order">Order</label>
-      <select id="sortDir" class="form-select">
-        <option value="asc" data-i18n="search.asc">Ascending</option>
-        <option value="desc" data-i18n="search.desc">Descending</option>
-      </select>
+
+    <div class="filter-block">
+      <span class="filter-title" data-i18n="home.filterMedia">Media</span>
+      <div id="mediaFilters" class="chip-row"></div>
     </div>
-    <div class="control-group">
-      <label data-i18n="search.perPage">Per page</label>
-      <select id="entriesPerPage" class="form-select">
-        <option>12</option>
-        <option>24</option>
-        <option>48</option>
-      </select>
+    <div class="filter-block">
+      <span class="filter-title" data-i18n="home.filterCharacter">Character</span>
+      <div id="characterFilters" class="chip-row"></div>
     </div>
-    <div class="control-group">
-      <label data-i18n="search.view">View</label>
-      <div class="btn-group view-toggle" role="group">
-        <button
-          id="viewGrid"
-          type="button"
-          class="btn btn-outline-dark btn-sm"
-          data-i18n="search.view.grid"
-        >
-          Grid
-        </button>
-        <button
-          id="viewList"
-          type="button"
-          class="btn btn-outline-dark btn-sm"
-          data-i18n="search.view.list"
-        >
-          List
+    <div class="filter-block">
+      <span class="filter-title" data-i18n="search.filterTags">Tags</span>
+      <div id="tagFilters" class="chip-row"></div>
+    </div>
+
+    <div class="search-control-divider"></div>
+    <div class="controls-row search-control-grid">
+      <div class="control-group">
+        <label data-i18n="search.typeLabel">Type</label>
+        <select id="typeFilter" class="form-select">
+          <option value="" data-i18n="search.all">All</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label data-i18n="search.sort">Sort</label>
+        <select id="sortBy" class="form-select">
+          <option value="label" data-i18n="search.field.label">Label</option>
+          <option value="size" data-i18n="search.sortSize">Size</option>
+          <option value="modifiedAt" data-i18n="search.sortModified">
+            Modified time
+          </option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label data-i18n="search.order">Order</label>
+        <select id="sortDir" class="form-select">
+          <option value="asc" data-i18n="search.asc">Ascending</option>
+          <option value="desc" data-i18n="search.desc">Descending</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label data-i18n="search.perPage">Per page</label>
+        <select id="entriesPerPage" class="form-select">
+          <option value="12">12</option>
+          <option value="24">24</option>
+          <option value="48">48</option>
+          <option value="72">72</option>
+          <option value="96">96</option>
+          <option value="144">144</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label data-i18n="search.diffFrom">Diff from</label>
+        <select id="diffFromVersion" class="form-select">
+          <option value="" data-i18n="search.diffDisabled">Disabled</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label data-i18n="search.diffTo">Diff to</label>
+        <select id="diffToVersion" class="form-select">
+          <option value="" data-i18n="search.diffDisabled">Disabled</option>
+        </select>
+      </div>
+      <div class="control-group search-diff-action">
+        <label>&nbsp;</label>
+        <button id="diffApply" class="btn btn-outline-dark" type="button" data-i18n="search.diffApply">
+          Compare
         </button>
       </div>
+      <div class="control-group">
+        <label data-i18n="search.diffStatus">Diff status</label>
+        <select id="diffStatus" class="form-select">
+          <option value="all" data-i18n="search.diffStatusAll">All</option>
+          <option value="unchanged" data-i18n="search.diffStatusUnchanged">Unchanged</option>
+          <option value="modified" data-i18n="search.diffStatusModified">Modified</option>
+          <option value="added" data-i18n="search.diffStatusAdded">Added</option>
+          <option value="removed" data-i18n="search.diffStatusRemoved">Removed</option>
+        </select>
+      </div>
     </div>
-  </div>
-</section>
+  </aside>
 
-<div id="searchResults" class="result-grid"></div>
-<div id="pagination" class="pagination-shell"></div>
+  <section class="panel-card search-result-panel">
+    <div class="search-result-head">
+      <div class="search-result-copy">
+        <h2 data-i18n="search.title">Search results</h2>
+        <p id="searchSummary" class="page-subtitle" data-i18n="search.loading">
+          Loading catalog...
+        </p>
+      </div>
+      <div class="search-result-view">
+        <span class="filter-title" data-i18n="search.view">View</span>
+        <div class="btn-group view-toggle" role="group">
+          <button
+            id="viewGrid"
+            type="button"
+            class="btn btn-outline-dark btn-sm"
+            data-i18n="search.view.grid"
+          >
+            Grid
+          </button>
+          <button
+            id="viewList"
+            type="button"
+            class="btn btn-outline-dark btn-sm"
+            data-i18n="search.view.list"
+          >
+            List
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="searchResults" class="result-grid"></div>
+    <div id="pagination" class="pagination-shell"></div>
+  </section>
+</section>
 
 <script>
   const initialQuery = "{{ .Query }}";
