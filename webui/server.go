@@ -30,6 +30,7 @@ type Server struct {
 	staticFS  http.FileSystem
 	catalog   *CatalogStore
 	tasks     *TaskManager
+	preview   *PreviewExportManager
 	filtersMu sync.Mutex
 	filters   AutoFilters
 	filterMod time.Time
@@ -69,6 +70,7 @@ func NewServer() (*Server, error) {
 		staticFS:  http.FS(static),
 		catalog:   catalog,
 		tasks:     NewTaskManager(catalog),
+		preview:   NewPreviewExportManager(),
 	}, nil
 }
 
@@ -88,6 +90,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/entry", s.handleEntry)
 	mux.HandleFunc("/api/entry/preview", s.handleEntryPreview)
 	mux.HandleFunc("/api/entry/preview/export", s.handleEntryPreviewExport)
+	mux.HandleFunc("/api/entry/preview/export/status", s.handleEntryPreviewExportStatus)
 	mux.HandleFunc("/api/entry/raw", s.handleEntryRaw)
 	mux.HandleFunc("/api/entry/plain", s.handleEntryPlain)
 	mux.HandleFunc("/api/entry/yaml", s.handleEntryYaml)
@@ -290,15 +293,7 @@ func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
 		"plainName":      assetDisplayName(entry),
 		"yamlAvailable":  yamlOK,
 		"yamlName":       yamlName,
-		"preview": map[string]any{
-			"available":  preview.Available,
-			"kind":       preview.Kind,
-			"type":       preview.ContentType,
-			"source":     preview.Source,
-			"exportable": preview.Exportable,
-			"outputDir":  preview.OutputDir,
-			"items":      previewItems(preview),
-		},
+		"preview":        previewPayload(preview),
 	}
 	writeJSON(w, resp)
 }
@@ -334,6 +329,10 @@ func (s *Server) handleEntryPreview(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, preview.Items[0].Path)
 		return
 	}
+	if strings.TrimSpace(preview.Path) == "" {
+		http.Error(w, "preview media not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", preview.ContentType)
 	http.ServeFile(w, r, preview.Path)
 }
@@ -356,14 +355,18 @@ func (s *Server) handleEntryPreviewExport(w http.ResponseWriter, r *http.Request
 	}
 
 	force := r.URL.Query().Get("force") == "1"
-	var preview PreviewInfo
+	kind := ""
+	preview := PreviewInfo{}
 	switch {
 	case isAssetBundle(entry.StrLabelCrc, entry.ResourceType):
-		preview = ensureAssetBundlePreview(entry.StrLabelCrc, path, force)
+		kind = "assetbundle"
+		preview = inspectAssetBundlePreview(entry.StrLabelCrc)
 	case isUsm(entry.StrLabelCrc):
-		preview = ensureUsmPreview(entry.StrLabelCrc, path, force)
+		kind = "usm"
+		preview = inspectUsmPreview(entry.StrLabelCrc, path)
 	case isAcb(entry.StrLabelCrc):
-		preview = ensureAcbPreview(entry.StrLabelCrc, path)
+		kind = "acb"
+		preview = inspectAcbPreview(entry.StrLabelCrc, path)
 	default:
 		http.Error(w, "preview export not supported", http.StatusUnsupportedMediaType)
 		return
@@ -374,19 +377,57 @@ func (s *Server) handleEntryPreviewExport(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	task, reused := s.preview.Start(entry.StrLabelCrc, kind, func(report PreviewProgressReporter) (PreviewInfo, error) {
+		reportPreviewProgress(report, 3, "prepare", "")
+		var result PreviewInfo
+		switch kind {
+		case "assetbundle":
+			result = ensureAssetBundlePreviewWithProgress(entry.StrLabelCrc, path, force, report)
+		case "usm":
+			result = ensureUsmPreviewWithProgress(entry.StrLabelCrc, path, force, report)
+		case "acb":
+			result = ensureAcbPreviewWithProgress(entry.StrLabelCrc, path, report)
+		default:
+			return PreviewInfo{}, errors.New("preview export not supported")
+		}
+
+		if !result.Exportable {
+			return result, errors.New("preview export not configured")
+		}
+		if !result.Available {
+			return result, errors.New("preview export failed")
+		}
+		return result, nil
+	})
+
+	w.WriteHeader(http.StatusAccepted)
 	resp := map[string]any{
-		"ok": true,
-		"preview": map[string]any{
-			"available":  preview.Available,
-			"kind":       preview.Kind,
-			"type":       preview.ContentType,
-			"source":     preview.Source,
-			"exportable": preview.Exportable,
-			"outputDir":  preview.OutputDir,
-			"items":      previewItems(preview),
-		},
+		"ok":     true,
+		"reused": reused,
+		"task":   task.Snapshot(),
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) handleEntryPreviewExportStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	task := s.preview.Get(id)
+	if task == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok":   true,
+		"task": task.Snapshot(),
+	})
 }
 
 func (s *Server) handleEntryRaw(w http.ResponseWriter, r *http.Request) {
@@ -710,16 +751,36 @@ func writeSSE(w io.Writer, event string, v any) {
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 }
 
-func previewItems(preview PreviewInfo) []map[string]string {
+func previewPayload(preview PreviewInfo) map[string]any {
+	return map[string]any{
+		"available":  preview.Available,
+		"kind":       preview.Kind,
+		"type":       preview.ContentType,
+		"source":     preview.Source,
+		"exportable": preview.Exportable,
+		"outputDir":  preview.OutputDir,
+		"items":      previewItems(preview),
+		"meta":       preview.Meta,
+	}
+}
+
+func previewItems(preview PreviewInfo) []map[string]any {
 	if len(preview.Items) == 0 {
 		return nil
 	}
-	resp := make([]map[string]string, 0, len(preview.Items))
+	resp := make([]map[string]any, 0, len(preview.Items))
 	for _, item := range preview.Items {
-		resp = append(resp, map[string]string{
+		payload := map[string]any{
 			"id":   item.ID,
 			"type": item.ContentType,
-		})
+		}
+		if strings.TrimSpace(item.Kind) != "" {
+			payload["kind"] = item.Kind
+		}
+		if strings.TrimSpace(item.Name) != "" {
+			payload["name"] = item.Name
+		}
+		resp = append(resp, payload)
 	}
 	return resp
 }

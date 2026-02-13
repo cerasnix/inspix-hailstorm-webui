@@ -18,6 +18,152 @@ function setLinkState(link, enabled, href) {
 let currentEntryLabel = "";
 let viewDiffReady = false;
 let viewDiffToken = 0;
+let previewRenderDisposers = [];
+let previewExportRunToken = 0;
+let previewAudioContext = null;
+
+function addPreviewDisposer(disposer) {
+  if (typeof disposer === "function") {
+    previewRenderDisposers.push(disposer);
+  }
+}
+
+function disposePreviewResources() {
+  if (!previewRenderDisposers.length) {
+    return;
+  }
+  previewRenderDisposers.forEach((dispose) => {
+    try {
+      dispose();
+    } catch (err) {
+      // Ignore cleanup failures from detached media nodes.
+    }
+  });
+  previewRenderDisposers = [];
+}
+
+function clampPercent(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return 0;
+  }
+  if (num < 0) {
+    return 0;
+  }
+  if (num > 100) {
+    return 100;
+  }
+  return num;
+}
+
+function exportPhaseText(phase, message) {
+  const normalized = String(phase || "").trim().toLowerCase();
+  if (message) {
+    if (normalized === "probe" && message.startsWith("streams=")) {
+      const count = message.slice("streams=".length);
+      return I18n.t("view.exportPhaseProbeStreams", { count });
+    }
+    if (normalized === "transcode" && message.startsWith("track=")) {
+      return I18n.t("view.exportPhaseTrack", {
+        track: message.slice("track=".length),
+      });
+    }
+  }
+  switch (normalized) {
+    case "queued":
+      return I18n.t("view.exportPhaseQueued");
+    case "prepare":
+      return I18n.t("view.exportPhasePrepare");
+    case "probe":
+      return I18n.t("view.exportPhaseProbe");
+    case "audio":
+      return I18n.t("view.exportPhaseAudio");
+    case "decode":
+      return I18n.t("view.exportPhaseDecode");
+    case "encode":
+      return I18n.t("view.exportPhaseEncode");
+    case "remux":
+      return I18n.t("view.exportPhaseRemux");
+    case "transcode":
+      return I18n.t("view.exportPhaseTranscode");
+    case "finalize":
+      return I18n.t("view.exportPhaseFinalize");
+    case "cached":
+      return I18n.t("view.exportPhaseCached");
+    case "done":
+      return I18n.t("view.exportPhaseDone");
+    default:
+      return I18n.t("view.exportPhaseWorking");
+  }
+}
+
+function setPreviewExportProgress({ visible, percent, text, state }) {
+  const shell = document.getElementById("previewExportProgress");
+  const label = document.getElementById("previewExportProgressLabel");
+  const value = document.getElementById("previewExportProgressValue");
+  const bar = document.getElementById("previewExportProgressBar");
+  if (!shell || !label || !value || !bar) {
+    return;
+  }
+
+  if (!visible) {
+    shell.classList.add("d-none");
+    shell.classList.remove("is-error", "is-success");
+    bar.style.width = "0%";
+    bar.setAttribute("aria-valuenow", "0");
+    label.textContent = I18n.t("view.exportPhaseIdle");
+    value.textContent = "0%";
+    return;
+  }
+
+  const safe = clampPercent(percent);
+  shell.classList.remove("d-none");
+  shell.classList.toggle("is-error", state === "error");
+  shell.classList.toggle("is-success", state === "success");
+  bar.style.width = `${safe}%`;
+  bar.setAttribute("aria-valuenow", String(Math.round(safe)));
+  label.textContent = text || I18n.t("view.exportPhaseWorking");
+  value.textContent = `${Math.round(safe)}%`;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function pollPreviewExportTask(taskId, token) {
+  const started = Date.now();
+  while (previewExportRunToken === token) {
+    const payload = await App.apiGet(
+      `/api/entry/preview/export/status?id=${encodeURIComponent(taskId)}`
+    );
+    const task = payload.task || payload || {};
+    const status = String(task.status || "running").toLowerCase();
+    const phase = task.phase || "";
+    const message = task.message || "";
+    const percent = clampPercent(task.percent);
+
+    setPreviewExportProgress({
+      visible: true,
+      percent,
+      text: exportPhaseText(phase, message),
+      state: status,
+    });
+
+    if (status === "success") {
+      return task;
+    }
+    if (status === "error") {
+      const errorText = String(task.error || "").trim();
+      throw new Error(errorText || I18n.t("view.exportFailed"));
+    }
+
+    if (Date.now() - started > 20 * 60 * 1000) {
+      throw new Error(I18n.t("view.exportTimeout"));
+    }
+    await wait(650);
+  }
+  throw new Error(I18n.t("view.exportCanceled"));
+}
 
 function renderPills(container, items) {
   if (!container) {
@@ -83,11 +229,738 @@ function renderOutputHint(hint, message, outputDir) {
   }
 }
 
+function previewItemUrl(label, itemId) {
+  const encoded = encodeURIComponent(label);
+  if (!itemId) {
+    return `/api/entry/preview?label=${encoded}`;
+  }
+  return `/api/entry/preview?label=${encoded}&item=${encodeURIComponent(itemId)}`;
+}
+
+function inferPreviewKindFromType(type) {
+  const value = String(type || "").toLowerCase();
+  if (value.startsWith("image/")) {
+    return "image";
+  }
+  if (value.startsWith("audio/")) {
+    return "audio";
+  }
+  if (value.startsWith("video/")) {
+    return "video";
+  }
+  if (value.startsWith("model/")) {
+    return "model";
+  }
+  if (value.includes("json") || value.startsWith("text/")) {
+    return "text";
+  }
+  return "";
+}
+
+function createMediaNode(kind, url, type, label) {
+  if (kind === "image") {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = label;
+    return img;
+  }
+  if (kind === "audio") {
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    const source = document.createElement("source");
+    source.src = url;
+    if (type) {
+      source.type = type;
+    }
+    audio.appendChild(source);
+    return audio;
+  }
+  if (kind === "video") {
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    const source = document.createElement("source");
+    source.src = url;
+    if (type) {
+      source.type = type;
+    }
+    video.appendChild(source);
+    return video;
+  }
+  if (kind === "model") {
+    const defaultOrbit = "35deg 72deg auto";
+    const shell = document.createElement("div");
+    shell.className = "model-viewer-shell";
+
+    const viewer = document.createElement("model-viewer");
+    viewer.setAttribute("src", url);
+    viewer.setAttribute("camera-controls", "");
+    viewer.setAttribute("auto-rotate", "");
+    viewer.setAttribute("ar", "");
+    viewer.setAttribute("rotation-per-second", "18deg");
+    viewer.setAttribute("interaction-prompt", "none");
+    viewer.setAttribute("camera-orbit", defaultOrbit);
+    viewer.setAttribute("min-camera-orbit", "auto 10deg auto");
+    viewer.setAttribute("max-camera-orbit", "auto 175deg auto");
+    viewer.setAttribute("field-of-view", "32deg");
+    viewer.setAttribute("min-field-of-view", "12deg");
+    viewer.setAttribute("max-field-of-view", "60deg");
+    viewer.setAttribute("shadow-intensity", "1");
+    viewer.setAttribute("shadow-softness", "0.85");
+    viewer.setAttribute("exposure", "1.12");
+    viewer.setAttribute("environment-image", "legacy");
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "model-viewer-toolbar";
+
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.className = "model-viewer-btn";
+    resetButton.textContent = I18n.t("view.modelReset");
+    resetButton.onclick = () => {
+      viewer.setAttribute("camera-orbit", defaultOrbit);
+      if (typeof viewer.jumpCameraToGoal === "function") {
+        viewer.jumpCameraToGoal();
+      }
+    };
+
+    const contrastButton = document.createElement("button");
+    contrastButton.type = "button";
+    contrastButton.className = "model-viewer-btn";
+    contrastButton.textContent = I18n.t("view.modelContrastOff");
+    contrastButton.onclick = () => {
+      const enabled = shell.classList.toggle("high-contrast");
+      contrastButton.textContent = enabled
+        ? I18n.t("view.modelContrastOn")
+        : I18n.t("view.modelContrastOff");
+    };
+
+    toolbar.appendChild(resetButton);
+    toolbar.appendChild(contrastButton);
+    shell.appendChild(viewer);
+    shell.appendChild(toolbar);
+    return shell;
+  }
+  return null;
+}
+
+function getPreviewAudioContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) {
+    return null;
+  }
+  if (!previewAudioContext || previewAudioContext.state === "closed") {
+    previewAudioContext = new Ctx();
+  }
+  return previewAudioContext;
+}
+
+function ensureCanvasSize(canvas) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return null;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return {
+    ctx,
+    width: canvas.clientWidth,
+    height: canvas.clientHeight,
+  };
+}
+
+function drawAudioVisualizerFrame(canvas, levels, seed) {
+  const state = ensureCanvasSize(canvas);
+  if (!state) {
+    return;
+  }
+  const { ctx, width, height } = state;
+  ctx.clearRect(0, 0, width, height);
+
+  const gradient = ctx.createLinearGradient(0, 0, width, 0);
+  gradient.addColorStop(0, "rgba(33, 93, 111, 0.95)");
+  gradient.addColorStop(0.7, "rgba(22, 129, 154, 0.9)");
+  gradient.addColorStop(1, "rgba(227, 106, 45, 0.9)");
+  ctx.fillStyle = gradient;
+
+  const bars = 42;
+  const gap = 2;
+  const barWidth = Math.max(2, (width - gap * (bars - 1)) / bars);
+  for (let i = 0; i < bars; i += 1) {
+    const idx = Math.min(
+      levels.length - 1,
+      Math.floor((i / (bars - 1 || 1)) * (levels.length - 1))
+    );
+    const value = Number(levels[idx] || 0);
+    const norm = Math.max(0.06, Math.min(1, value));
+    const wobble = 0.08 * Math.sin(seed * 0.11 + i * 0.47);
+    const barHeight = Math.max(2, Math.min(height, height * (norm + wobble)));
+    const x = i * (barWidth + gap);
+    const y = height - barHeight;
+    ctx.fillRect(x, y, barWidth, barHeight);
+  }
+}
+
+function drawAudioVisualizerIdle(canvas, seed = 0) {
+  const levels = new Array(42).fill(0).map((_, idx) => {
+    return 0.18 + ((Math.sin(seed + idx * 0.35) + 1) * 0.16);
+  });
+  drawAudioVisualizerFrame(canvas, levels, seed);
+}
+
+function attachAudioVisualizer(audio, canvas, seed = 0) {
+  if (!audio || !canvas) {
+    return () => {};
+  }
+
+  const FrequencyBins = 128;
+  let analyser = null;
+  let sourceNode = null;
+  let data = null;
+  let rafId = 0;
+  let destroyed = false;
+  let frameTick = 0;
+
+  const stopLoop = () => {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    drawAudioVisualizerIdle(canvas, seed + frameTick);
+  };
+
+  const ensureAnalyser = () => {
+    if (analyser) {
+      return true;
+    }
+    const audioContext = getPreviewAudioContext();
+    if (!audioContext) {
+      return false;
+    }
+    try {
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = FrequencyBins * 2;
+      analyser.smoothingTimeConstant = 0.78;
+      data = new Uint8Array(analyser.frequencyBinCount);
+      sourceNode = audioContext.createMediaElementSource(audio);
+      sourceNode.connect(analyser);
+      analyser.connect(audioContext.destination);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  };
+
+  const render = () => {
+    if (destroyed) {
+      return;
+    }
+    frameTick += 1;
+    if (analyser && data) {
+      analyser.getByteFrequencyData(data);
+      const normalized = Array.from(data, (value) => value / 255);
+      drawAudioVisualizerFrame(canvas, normalized, seed + frameTick);
+    } else {
+      drawAudioVisualizerIdle(canvas, seed + frameTick * 0.02);
+    }
+    rafId = requestAnimationFrame(render);
+  };
+
+  const handlePlay = async () => {
+    if (!ensureAnalyser()) {
+      return;
+    }
+    const audioContext = getPreviewAudioContext();
+    if (audioContext) {
+      try {
+        await audioContext.resume();
+      } catch (err) {
+        // Ignore resume failures caused by browser autoplay policies.
+      }
+    }
+    if (!rafId) {
+      render();
+    }
+  };
+
+  const handlePause = () => {
+    stopLoop();
+  };
+
+  const handleResize = () => {
+    drawAudioVisualizerIdle(canvas, seed + frameTick);
+  };
+
+  audio.addEventListener("play", handlePlay);
+  audio.addEventListener("pause", handlePause);
+  audio.addEventListener("ended", handlePause);
+  window.addEventListener("resize", handleResize);
+  drawAudioVisualizerIdle(canvas, seed);
+
+  return () => {
+    destroyed = true;
+    stopLoop();
+    audio.removeEventListener("play", handlePlay);
+    audio.removeEventListener("pause", handlePause);
+    audio.removeEventListener("ended", handlePause);
+    window.removeEventListener("resize", handleResize);
+    if (sourceNode) {
+      try {
+        sourceNode.disconnect();
+      } catch (err) {
+        // Ignore disconnect races when DOM is torn down.
+      }
+    }
+    if (analyser) {
+      try {
+        analyser.disconnect();
+      } catch (err) {
+        // Ignore disconnect races when DOM is torn down.
+      }
+    }
+  };
+}
+
+function createAudioPreviewCard({ url, type, label, title, trackTag, seed }) {
+  const card = document.createElement("article");
+  card.className = "preview-audio-item";
+
+  const head = document.createElement("div");
+  head.className = "preview-audio-head";
+
+  const nameWrap = document.createElement("div");
+  nameWrap.className = "preview-audio-copy";
+  const titleEl = document.createElement("div");
+  titleEl.className = "preview-audio-label";
+  titleEl.textContent = title;
+  const metaEl = document.createElement("div");
+  metaEl.className = "preview-audio-meta";
+  metaEl.textContent = type
+    ? I18n.t("view.audioFormat", { type })
+    : I18n.t("view.audioFormatUnknown");
+  nameWrap.appendChild(titleEl);
+  nameWrap.appendChild(metaEl);
+  head.appendChild(nameWrap);
+
+  if (trackTag) {
+    const tag = document.createElement("span");
+    tag.className = "preview-audio-track";
+    tag.textContent = trackTag;
+    head.appendChild(tag);
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "preview-audio-visualizer";
+  card.appendChild(head);
+  card.appendChild(canvas);
+
+  const audio = createMediaNode("audio", url, type, label);
+  if (audio) {
+    audio.classList.add("preview-audio-player");
+    card.appendChild(audio);
+    addPreviewDisposer(attachAudioVisualizer(audio, canvas, seed));
+  }
+  return card;
+}
+
+function renderAudioPreview(container, preview, label) {
+  const items = Array.isArray(preview.items) && preview.items.length
+    ? preview.items
+    : [
+        {
+          id: "",
+          type: preview.type || "",
+          name: I18n.t("view.trackLabel", { index: 1 }),
+        },
+      ];
+
+  const grid = document.createElement("div");
+  grid.className = "preview-audio-grid";
+  items.forEach((item, index) => {
+    const title = item.name || I18n.t("view.trackLabel", { index: index + 1 });
+    const trackTag = item.id ? `#${item.id}` : "";
+    const card = createAudioPreviewCard({
+      url: previewItemUrl(label, item.id || ""),
+      type: item.type || preview.type || "",
+      label,
+      title,
+      trackTag,
+      seed: index + 1,
+    });
+    grid.appendChild(card);
+  });
+  container.appendChild(grid);
+}
+
+function translatePrefabComponent(name) {
+  const clean = String(name || "").trim();
+  if (!clean) {
+    return "-";
+  }
+  const key = `view.prefabComp.${clean}`;
+  const text = I18n.t(key);
+  return text === key ? clean : text;
+}
+
+function buildPrefabHierarchyTreeNode(node, depth = 0) {
+  if (!node) {
+    return null;
+  }
+  const name = node.name || I18n.t("view.prefabNodeUnnamed");
+  const components = Array.isArray(node.components) ? node.components : [];
+  const children = Array.isArray(node.children) ? node.children : [];
+  const hasChildren = children.length > 0;
+
+  if (!hasChildren) {
+    const leaf = document.createElement("div");
+    leaf.className = "prefab-tree-leaf";
+    const head = document.createElement("div");
+    head.className = "prefab-tree-head";
+    const nameEl = document.createElement("span");
+    nameEl.className = "prefab-node-name";
+    nameEl.textContent = name;
+    head.appendChild(nameEl);
+
+    if (components.length) {
+      const tags = document.createElement("div");
+      tags.className = "prefab-component-list";
+      components.forEach((component) => {
+        const tag = document.createElement("span");
+        tag.className = "prefab-component";
+        tag.textContent = translatePrefabComponent(component);
+        tags.appendChild(tag);
+      });
+      head.appendChild(tags);
+    }
+    leaf.appendChild(head);
+    return leaf;
+  }
+
+  const details = document.createElement("details");
+  details.className = "prefab-tree-node";
+  if (depth < 2) {
+    details.open = true;
+  }
+
+  const summary = document.createElement("summary");
+  summary.className = "prefab-tree-head";
+  const nameEl = document.createElement("span");
+  nameEl.className = "prefab-node-name";
+  nameEl.textContent = name;
+  summary.appendChild(nameEl);
+
+  if (components.length) {
+    const tags = document.createElement("div");
+    tags.className = "prefab-component-list";
+    components.forEach((component) => {
+      const tag = document.createElement("span");
+      tag.className = "prefab-component";
+      tag.textContent = translatePrefabComponent(component);
+      tags.appendChild(tag);
+    });
+    summary.appendChild(tags);
+  }
+  details.appendChild(summary);
+
+  const childBox = document.createElement("div");
+  childBox.className = "prefab-tree-children";
+  children.forEach((child) => {
+    const childNode = buildPrefabHierarchyTreeNode(child, depth + 1);
+    if (childNode) {
+      childBox.appendChild(childNode);
+    }
+  });
+  details.appendChild(childBox);
+  return details;
+}
+
+function createPrefabHierarchySection(hierarchy) {
+  const section = document.createElement("section");
+  section.className = "prefab-section";
+
+  const title = document.createElement("h4");
+  title.textContent = I18n.t("view.prefabHierarchy");
+  section.appendChild(title);
+
+  if (!hierarchy || !hierarchy.available) {
+    const empty = document.createElement("div");
+    empty.className = "prefab-empty";
+    empty.textContent = I18n.t("view.prefabHierarchyUnavailable");
+    section.appendChild(empty);
+    return section;
+  }
+
+  const rendered = Number(hierarchy.renderedNodeCount || 0);
+  const total = Number(hierarchy.nodeCount || rendered);
+  const roots = Number(hierarchy.rootCount || 0);
+  const depth = Number(hierarchy.maxDepth || 0);
+  const summary = document.createElement("div");
+  summary.className = "prefab-hierarchy-summary";
+  summary.textContent = I18n.t("view.prefabHierarchySummary", {
+    rendered: String(rendered),
+    total: String(total),
+    roots: String(roots),
+    depth: String(depth),
+  });
+  section.appendChild(summary);
+
+  const stats = Array.isArray(hierarchy.componentStats)
+    ? hierarchy.componentStats
+    : [];
+  if (stats.length) {
+    const statsBox = document.createElement("div");
+    statsBox.className = "prefab-hierarchy-stats";
+    stats.slice(0, 12).forEach((item) => {
+      const chip = document.createElement("span");
+      chip.className = "prefab-chip";
+      const label = translatePrefabComponent(item.name || "");
+      chip.textContent = `${label} ${item.count || 0}`;
+      statsBox.appendChild(chip);
+    });
+    section.appendChild(statsBox);
+  }
+
+  if (hierarchy.truncated) {
+    const notice = document.createElement("div");
+    notice.className = "prefab-hierarchy-truncated";
+    notice.textContent = I18n.t("view.prefabHierarchyTruncated");
+    section.appendChild(notice);
+  }
+
+  const tree = document.createElement("div");
+  tree.className = "prefab-tree";
+  const rootsData = Array.isArray(hierarchy.roots) ? hierarchy.roots : [];
+  rootsData.forEach((rootNode) => {
+    const nodeEl = buildPrefabHierarchyTreeNode(rootNode, 0);
+    if (nodeEl) {
+      tree.appendChild(nodeEl);
+    }
+  });
+  if (!rootsData.length) {
+    const empty = document.createElement("div");
+    empty.className = "prefab-empty";
+    empty.textContent = I18n.t("view.prefabHierarchyUnavailable");
+    tree.appendChild(empty);
+  }
+  section.appendChild(tree);
+  return section;
+}
+
+function renderPrefabPreview(container, preview, label) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "prefab-preview";
+
+  const stage = document.createElement("div");
+  stage.className = "prefab-stage";
+  const media = document.createElement("div");
+  media.className = "prefab-media";
+  stage.appendChild(media);
+
+  const items = Array.isArray(preview.items)
+    ? preview.items
+        .map((item, index) => {
+          if (!item) {
+            return null;
+          }
+          const itemKind = item.kind || inferPreviewKindFromType(item.type);
+          if (!itemKind) {
+            return null;
+          }
+          return {
+            id: item.id || "",
+            kind: itemKind,
+            type: item.type || "",
+            name:
+              item.name ||
+              `${I18n.t("view.prefabItem")} ${index + 1}`,
+            url: previewItemUrl(label, item.id || ""),
+          };
+        })
+        .filter(Boolean)
+    : [];
+
+  if (!items.length && preview.type) {
+    const fallbackKind = inferPreviewKindFromType(preview.type);
+    if (fallbackKind) {
+      items.push({
+        id: "",
+        kind: fallbackKind,
+        type: preview.type,
+        name: I18n.t("view.prefabPrimary"),
+        url: previewItemUrl(label, ""),
+      });
+    }
+  }
+
+  let activeIndex = 0;
+  const mediaTitle = document.createElement("div");
+  mediaTitle.className = "prefab-media-title";
+  stage.appendChild(mediaTitle);
+
+  const renderActiveItem = () => {
+    media.innerHTML = "";
+    if (!items.length) {
+      media.textContent = I18n.t("view.prefabNoMedia");
+      mediaTitle.textContent = "";
+      return;
+    }
+    const active = items[activeIndex] || items[0];
+    mediaTitle.textContent = active.name || I18n.t("view.prefabPrimary");
+    const node = createMediaNode(active.kind, active.url, active.type, label);
+    if (!node) {
+      media.textContent = I18n.t("view.previewNotSupported");
+      return;
+    }
+    media.appendChild(node);
+  };
+  renderActiveItem();
+
+  if (items.length > 1) {
+    const switcher = document.createElement("div");
+    switcher.className = "prefab-switcher";
+    items.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "prefab-switch-btn";
+      button.textContent = item.name || `${I18n.t("view.prefabItem")} ${index + 1}`;
+      if (index === activeIndex) {
+        button.classList.add("active");
+      }
+      button.onclick = () => {
+        activeIndex = index;
+        switcher
+          .querySelectorAll(".prefab-switch-btn")
+          .forEach((el, idx) => el.classList.toggle("active", idx === index));
+        renderActiveItem();
+      };
+      switcher.appendChild(button);
+    });
+    stage.appendChild(switcher);
+  }
+
+  const panel = document.createElement("aside");
+  panel.className = "prefab-panel";
+
+  const panelTitle = document.createElement("h3");
+  panelTitle.className = "prefab-panel-title";
+  panelTitle.textContent = I18n.t("view.prefabSummary");
+  panel.appendChild(panelTitle);
+
+  const meta = preview.meta || {};
+  const bundleName = meta.bundleName || "-";
+  const dependencyCount = Number(meta.dependencyCount || 0);
+  const assetTotal = Number(meta.assetTotal || 0);
+  const itemCount = Number(meta.itemCount || items.length || 0);
+
+  const rows = document.createElement("div");
+  rows.className = "prefab-meta-rows";
+
+  const appendRow = (key, value) => {
+    const row = document.createElement("div");
+    row.className = "prefab-meta-row";
+    const keyEl = document.createElement("span");
+    keyEl.className = "prefab-meta-key";
+    keyEl.textContent = key;
+    const valueEl = document.createElement("span");
+    valueEl.className = "prefab-meta-value";
+    valueEl.textContent = value;
+    row.appendChild(keyEl);
+    row.appendChild(valueEl);
+    rows.appendChild(row);
+  };
+
+  appendRow(I18n.t("view.prefabBundle"), bundleName);
+  appendRow(I18n.t("view.prefabPreviewItems"), String(itemCount));
+  appendRow(I18n.t("view.prefabAssetsTotal"), String(assetTotal));
+  appendRow(I18n.t("view.prefabDependencies"), String(dependencyCount));
+  panel.appendChild(rows);
+
+  const roots = Array.isArray(meta.rootObjects) ? meta.rootObjects : [];
+  if (roots.length) {
+    const section = document.createElement("section");
+    section.className = "prefab-section";
+    const title = document.createElement("h4");
+    title.textContent = I18n.t("view.prefabRootObjects");
+    section.appendChild(title);
+    const list = document.createElement("div");
+    list.className = "prefab-chip-list";
+    roots.forEach((name) => {
+      const chip = document.createElement("span");
+      chip.className = "prefab-chip";
+      chip.textContent = name;
+      list.appendChild(chip);
+    });
+    section.appendChild(list);
+    panel.appendChild(section);
+  }
+
+  const groups = Array.isArray(meta.assetGroups) ? meta.assetGroups : [];
+  if (groups.length) {
+    const section = document.createElement("section");
+    section.className = "prefab-section";
+    const title = document.createElement("h4");
+    title.textContent = I18n.t("view.prefabAssetGroups");
+    section.appendChild(title);
+    const list = document.createElement("div");
+    list.className = "prefab-group-list";
+    groups.slice(0, 12).forEach((group) => {
+      const row = document.createElement("div");
+      row.className = "prefab-group-row";
+      const name = document.createElement("span");
+      name.textContent = group.name || "-";
+      const count = document.createElement("span");
+      count.textContent = String(group.count || 0);
+      row.appendChild(name);
+      row.appendChild(count);
+      list.appendChild(row);
+    });
+    section.appendChild(list);
+    panel.appendChild(section);
+  }
+
+  panel.appendChild(createPrefabHierarchySection(meta.hierarchy));
+
+  const deps = Array.isArray(meta.dependencies) ? meta.dependencies : [];
+  const depSection = document.createElement("section");
+  depSection.className = "prefab-section";
+  const depTitle = document.createElement("h4");
+  depTitle.textContent = I18n.t("view.prefabDependencyList");
+  depSection.appendChild(depTitle);
+  if (!deps.length) {
+    const empty = document.createElement("div");
+    empty.className = "prefab-empty";
+    empty.textContent = I18n.t("view.prefabNoDependencies");
+    depSection.appendChild(empty);
+  } else {
+    const depList = document.createElement("div");
+    depList.className = "prefab-chip-list";
+    deps.slice(0, 40).forEach((name) => {
+      const chip = document.createElement("span");
+      chip.className = "prefab-chip";
+      chip.textContent = name;
+      depList.appendChild(chip);
+    });
+    depSection.appendChild(depList);
+  }
+  panel.appendChild(depSection);
+
+  wrapper.appendChild(stage);
+  wrapper.appendChild(panel);
+  container.appendChild(wrapper);
+}
+
 function renderPreview(preview, label) {
   const container = document.getElementById("previewContainer");
   if (!container) {
     return;
   }
+  disposePreviewResources();
   container.innerHTML = "";
   if (!preview || !preview.available) {
     if (preview && preview.exportable) {
@@ -97,67 +970,27 @@ function renderPreview(preview, label) {
     }
     return;
   }
-  const url = `/api/entry/preview?label=${encodeURIComponent(label)}`;
+  const url = previewItemUrl(label, "");
+  if (preview.kind === "prefab") {
+    renderPrefabPreview(container, preview, label);
+    return;
+  }
   if (preview.kind === "image") {
-    const img = document.createElement("img");
-    img.src = url;
-    img.alt = label;
-    container.appendChild(img);
+    const node = createMediaNode("image", url, preview.type, label);
+    container.appendChild(node);
     return;
   }
   if (preview.kind === "audio") {
-    if (preview.items && preview.items.length > 0) {
-      preview.items.forEach((item, index) => {
-        const wrapper = document.createElement("div");
-        wrapper.className = "preview-audio-item";
-        const label = document.createElement("div");
-        label.className = "preview-audio-label";
-        label.textContent = I18n.t("view.trackLabel", { index: index + 1 });
-        const audio = document.createElement("audio");
-        audio.controls = true;
-        const source = document.createElement("source");
-        source.src = `${url}&item=${encodeURIComponent(item.id)}`;
-        if (item.type) {
-          source.type = item.type;
-        }
-        audio.appendChild(source);
-        wrapper.appendChild(label);
-        wrapper.appendChild(audio);
-        container.appendChild(wrapper);
-      });
-      return;
-    }
-    const audio = document.createElement("audio");
-    audio.controls = true;
-    const source = document.createElement("source");
-    source.src = url;
-    if (preview.type) {
-      source.type = preview.type;
-    }
-    audio.appendChild(source);
-    container.appendChild(audio);
+    renderAudioPreview(container, preview, label);
     return;
   }
   if (preview.kind === "video") {
-    const video = document.createElement("video");
-    video.controls = true;
-    video.playsInline = true;
-    const source = document.createElement("source");
-    source.src = url;
-    if (preview.type) {
-      source.type = preview.type;
-    }
-    video.appendChild(source);
+    const video = createMediaNode("video", url, preview.type, label);
     container.appendChild(video);
     return;
   }
   if (preview.kind === "model") {
-    const viewer = document.createElement("model-viewer");
-    viewer.setAttribute("src", url);
-    viewer.setAttribute("camera-controls", "");
-    viewer.setAttribute("auto-rotate", "");
-    viewer.setAttribute("ar", "");
-    viewer.setAttribute("shadow-intensity", "0.7");
+    const viewer = createMediaNode("model", url, preview.type, label);
     container.appendChild(viewer);
     return;
   }
@@ -193,6 +1026,7 @@ function renderPreviewActions(preview, label) {
 
   if (!preview || !preview.exportable) {
     button.classList.add("d-none");
+    setPreviewExportProgress({ visible: false });
     if (preview && preview.outputDir) {
       renderOutputHint(hint, I18n.t("view.exportNotConfigured"), preview.outputDir);
     } else {
@@ -204,25 +1038,71 @@ function renderPreviewActions(preview, label) {
   button.classList.remove("d-none");
   button.disabled = false;
   button.textContent = I18n.t("view.exportPreview");
+  setPreviewExportProgress({ visible: false });
   renderOutputHint(hint, "", preview.outputDir);
 
   button.onclick = async () => {
+    const token = ++previewExportRunToken;
     button.disabled = true;
-    button.textContent = "Exporting...";
+    button.textContent = I18n.t("view.exporting");
+    setPreviewExportProgress({
+      visible: true,
+      percent: 1,
+      text: I18n.t("view.exportPhaseQueued"),
+      state: "running",
+    });
+    renderOutputHint(hint, I18n.t("view.exportPhaseQueued"), preview.outputDir);
+
     try {
       const res = await fetch(
         `/api/entry/preview/export?label=${encodeURIComponent(
           label
         )}&force=1`,
-        { method: "POST" }
+        {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+        }
       );
       if (!res.ok) {
         const message = (await res.text()).trim();
         throw new Error(message || I18n.t("view.exportFailed"));
       }
+      const payload = await res.json();
+      const taskId = payload?.task?.id;
+      if (!taskId) {
+        throw new Error(I18n.t("view.exportFailed"));
+      }
+      await pollPreviewExportTask(taskId, token);
     } catch (err) {
-      hint.textContent = err.message || I18n.t("view.exportFailed");
+      if (previewExportRunToken !== token) {
+        return;
+      }
+      setPreviewExportProgress({
+        visible: true,
+        percent: 100,
+        text: err.message || I18n.t("view.exportFailed"),
+        state: "error",
+      });
+      renderOutputHint(
+        hint,
+        err.message || I18n.t("view.exportFailed"),
+        preview.outputDir
+      );
+      button.disabled = false;
+      button.textContent = I18n.t("view.exportPreview");
+      return;
     }
+
+    if (previewExportRunToken !== token) {
+      return;
+    }
+    setPreviewExportProgress({
+      visible: true,
+      percent: 100,
+      text: I18n.t("view.exportPhaseDone"),
+      state: "success",
+    });
+    await wait(180);
     await loadEntry();
   };
 }

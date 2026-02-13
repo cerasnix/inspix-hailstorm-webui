@@ -3,20 +3,25 @@ package webui
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const previewRoot = "cache/webui-preview"
+const prefabHierarchyMaxNodes = 1200
 
 type PreviewInfo struct {
 	Available   bool
@@ -27,18 +32,82 @@ type PreviewInfo struct {
 	OutputDir   string
 	Exportable  bool
 	Items       []PreviewItem
+	Meta        map[string]any
 }
+
+type PreviewProgressReporter func(percent float64, phase string, message string)
 
 var loopRE = regexp.MustCompile(`(?i)\bloop (start|end)\b`)
 var streamCountRE = regexp.MustCompile(`(?i)(stream count|streams|subsong count|subsongs)\s*:\s*(\d+)`)
 var meshVertexCountRE = regexp.MustCompile(`"m_VertexCount"\s*:\s*(\d+)`)
 var musicLyricVideoRE = regexp.MustCompile(`(?i)^music_lyric_video_(\d+)\.usm$`)
 var trailingNumberBeforeExtRE = regexp.MustCompile(`(?i)(\d+)(?:\.[^.]+)?$`)
+var bundleNameLineRE = regexp.MustCompile(`"m_AssetBundleName"\s*:\s*"([^"]*)"`)
+var quotedStringLineRE = regexp.MustCompile(`"([^"\\]+)"`)
 
 type PreviewItem struct {
 	ID          string
 	ContentType string
 	Path        string
+	Kind        string
+	Name        string
+}
+
+type PrefabAssetGroup struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type bundleDescriptor struct {
+	BundleName   string
+	Dependencies []string
+}
+
+type prefabHierarchySummary struct {
+	Available         bool                  `json:"available"`
+	Source            string                `json:"source,omitempty"`
+	NodeCount         int                   `json:"nodeCount"`
+	RenderedNodeCount int                   `json:"renderedNodeCount"`
+	RootCount         int                   `json:"rootCount"`
+	MaxDepth          int                   `json:"maxDepth"`
+	Truncated         bool                  `json:"truncated"`
+	ComponentStats    []prefabComponentStat `json:"componentStats,omitempty"`
+	Roots             []prefabHierarchyNode `json:"roots,omitempty"`
+	Error             string                `json:"error,omitempty"`
+}
+
+type prefabHierarchyNode struct {
+	Name       string                `json:"name"`
+	Index      int                   `json:"index"`
+	Components []string              `json:"components"`
+	Children   []prefabHierarchyNode `json:"children,omitempty"`
+}
+
+type prefabComponentStat struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type gltfNode struct {
+	Name        string    `json:"name"`
+	Children    []int     `json:"children"`
+	Mesh        *int      `json:"mesh"`
+	Camera      *int      `json:"camera"`
+	Skin        *int      `json:"skin"`
+	Weights     []float64 `json:"weights"`
+	Translation []float64 `json:"translation"`
+	Rotation    []float64 `json:"rotation"`
+	Scale       []float64 `json:"scale"`
+}
+
+type gltfScene struct {
+	Nodes []int `json:"nodes"`
+}
+
+type gltfDocument struct {
+	Nodes  []gltfNode  `json:"nodes"`
+	Scene  *int        `json:"scene"`
+	Scenes []gltfScene `json:"scenes"`
 }
 
 func resolvePreview(entryLabel string, entryType string, resourceType uint32, plainPath string) PreviewInfo {
@@ -49,19 +118,19 @@ func resolvePreview(entryLabel string, entryType string, resourceType uint32, pl
 	}
 
 	if isUsm(entryLabel) {
-		if info := ensureUsmPreview(entryLabel, plainPath, false); info.Available || info.Exportable {
+		if info := inspectUsmPreview(entryLabel, plainPath); info.Available || info.Exportable {
 			return info
 		}
 	}
 
 	if isAcb(entryLabel) {
-		if info := ensureAcbPreview(entryLabel, plainPath); info.Available || info.Exportable {
+		if info := inspectAcbPreview(entryLabel, plainPath); info.Available || info.Exportable {
 			return info
 		}
 	}
 
 	if isAssetBundle(entryLabel, resourceType) {
-		return ensureAssetBundlePreview(entryLabel, plainPath, false)
+		return inspectAssetBundlePreview(entryLabel)
 	}
 
 	return PreviewInfo{}
@@ -103,7 +172,89 @@ func sniffDirectPreview(path string) PreviewInfo {
 	}
 }
 
+func inspectAcbPreview(label string, plainPath string) PreviewInfo {
+	outDir := filepath.Join(previewRoot, "acb")
+	toolsOK := acbToolsAvailable()
+	if !toolsOK {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: false,
+		}
+	}
+
+	if !fileExists(plainPath) {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+	base := sanitizeLabel(label)
+	outPath := filepath.Join(outDir, base+".mp3")
+	if isFresh(outPath, plainPath) {
+		return PreviewInfo{
+			Available:   true,
+			Kind:        "audio",
+			ContentType: "audio/mpeg",
+			Path:        outPath,
+			Source:      "derived",
+			OutputDir:   outputDirForClient(outDir),
+			Exportable:  toolsOK,
+		}
+	}
+
+	multi, _ := filepath.Glob(filepath.Join(outDir, base+"_[0-9][0-9].mp3"))
+	if len(multi) == 0 {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+	sort.Strings(multi)
+
+	items := make([]PreviewItem, 0, len(multi))
+	for _, path := range multi {
+		if !isFresh(path, plainPath) {
+			continue
+		}
+		baseName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		parts := strings.Split(baseName, "_")
+		id := parts[len(parts)-1]
+		items = append(items, PreviewItem{
+			ID:          id,
+			ContentType: "audio/mpeg",
+			Path:        path,
+			Name:        fmt.Sprintf("Track %s", id),
+		})
+	}
+	if len(items) == 0 {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+	return PreviewInfo{
+		Available:   true,
+		Kind:        "audio",
+		ContentType: "audio/mpeg",
+		Path:        items[0].Path,
+		Source:      "derived",
+		OutputDir:   outputDirForClient(outDir),
+		Exportable:  toolsOK,
+		Items:       items,
+	}
+}
+
+func reportPreviewProgress(report PreviewProgressReporter, percent float64, phase string, message string) {
+	if report != nil {
+		report(percent, phase, message)
+	}
+}
+
 func ensureAcbPreview(label string, plainPath string) PreviewInfo {
+	return ensureAcbPreviewWithProgress(label, plainPath, nil)
+}
+
+func ensureAcbPreviewWithProgress(label string, plainPath string, report PreviewProgressReporter) PreviewInfo {
 	outDir := filepath.Join(previewRoot, "acb")
 	toolsOK := acbToolsAvailable()
 	if !toolsOK {
@@ -128,9 +279,12 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 	base := sanitizeLabel(label)
 	outPath := filepath.Join(outDir, base+".mp3")
 
+	reportPreviewProgress(report, 8, "prepare", "")
 	streamCount := detectStreamCount(plainPath)
+	reportPreviewProgress(report, 14, "probe", fmt.Sprintf("streams=%d", streamCount))
 	if streamCount <= 1 {
 		if isFresh(outPath, plainPath) {
+			reportPreviewProgress(report, 100, "cached", "")
 			return PreviewInfo{
 				Available:   true,
 				Kind:        "audio",
@@ -142,6 +296,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 			}
 		}
 
+		reportPreviewProgress(report, 28, "decode", "")
 		_, ok := encodeAcbToMp3(plainPath, outPath, 0)
 		if !ok {
 			return PreviewInfo{
@@ -149,6 +304,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 				Exportable: toolsOK,
 			}
 		}
+		reportPreviewProgress(report, 94, "finalize", "")
 		return PreviewInfo{
 			Available:   true,
 			Kind:        "audio",
@@ -164,19 +320,26 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 	for i := 1; i <= streamCount; i++ {
 		suffix := fmt.Sprintf("%s_%02d.mp3", base, i)
 		out := filepath.Join(outDir, suffix)
+		start := 16 + (float64(i-1)/float64(streamCount))*74
+		end := 16 + (float64(i)/float64(streamCount))*74
+		reportPreviewProgress(report, start, "transcode", fmt.Sprintf("track=%d/%d", i, streamCount))
+
 		if !isFresh(out, plainPath) {
 			item, ok := encodeAcbToMp3(plainPath, out, i)
 			if !ok {
 				continue
 			}
+			item.Name = fmt.Sprintf("Track %02d", i)
 			items = append(items, item)
 		} else {
 			items = append(items, PreviewItem{
 				ID:          fmt.Sprintf("%02d", i),
 				ContentType: "audio/mpeg",
 				Path:        out,
+				Name:        fmt.Sprintf("Track %02d", i),
 			})
 		}
+		reportPreviewProgress(report, end, "transcode", fmt.Sprintf("track=%d/%d", i, streamCount))
 	}
 
 	if len(items) == 0 {
@@ -185,6 +348,7 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 			Exportable: toolsOK,
 		}
 	}
+	reportPreviewProgress(report, 96, "finalize", "")
 
 	return PreviewInfo{
 		Available:   true,
@@ -198,7 +362,45 @@ func ensureAcbPreview(label string, plainPath string) PreviewInfo {
 	}
 }
 
+func inspectUsmPreview(label string, plainPath string) PreviewInfo {
+	outDir := filepath.Join(previewRoot, "usm")
+	toolsOK := ffmpegAvailable()
+	if !toolsOK {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: false,
+		}
+	}
+	if !fileExists(plainPath) {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+
+	outPath := filepath.Join(outDir, sanitizeLabel(label)+".mp4")
+	if !isFresh(outPath, plainPath) {
+		return PreviewInfo{
+			OutputDir:  outputDirForClient(outDir),
+			Exportable: toolsOK,
+		}
+	}
+	return PreviewInfo{
+		Available:   true,
+		Kind:        "video",
+		ContentType: "video/mp4",
+		Path:        outPath,
+		Source:      "derived",
+		OutputDir:   outputDirForClient(outDir),
+		Exportable:  toolsOK,
+	}
+}
+
 func ensureUsmPreview(label string, plainPath string, force bool) PreviewInfo {
+	return ensureUsmPreviewWithProgress(label, plainPath, force, nil)
+}
+
+func ensureUsmPreviewWithProgress(label string, plainPath string, force bool, report PreviewProgressReporter) PreviewInfo {
 	outDir := filepath.Join(previewRoot, "usm")
 	toolsOK := ffmpegAvailable()
 	if !toolsOK {
@@ -220,10 +422,12 @@ func ensureUsmPreview(label string, plainPath string, force bool) PreviewInfo {
 			Exportable: toolsOK,
 		}
 	}
+	reportPreviewProgress(report, 10, "prepare", "")
 
 	companionAcb := findUsmCompanionAcbPath(label, plainPath)
 	companionAudio := ""
 	if companionAcb != "" {
+		reportPreviewProgress(report, 22, "audio", "companion")
 		if derivedAudio, ok := ensureAcbAudioForUsm(companionAcb); ok {
 			companionAudio = derivedAudio
 		}
@@ -238,12 +442,16 @@ func ensureUsmPreview(label string, plainPath string, force bool) PreviewInfo {
 		deps = append(deps, companionAudio)
 	}
 	if force || !isFreshForInputs(outPath, deps...) {
-		if !transcodeUsmToMp4(plainPath, companionAudio, outPath) {
+		reportPreviewProgress(report, 40, "transcode", "")
+		if !transcodeUsmToMp4(plainPath, companionAudio, outPath, report) {
 			return PreviewInfo{
 				OutputDir:  outputDirForClient(outDir),
 				Exportable: toolsOK,
 			}
 		}
+		reportPreviewProgress(report, 96, "finalize", "")
+	} else {
+		reportPreviewProgress(report, 100, "cached", "")
 	}
 
 	return PreviewInfo{
@@ -257,12 +465,25 @@ func ensureUsmPreview(label string, plainPath string, force bool) PreviewInfo {
 	}
 }
 
+func inspectAssetBundlePreview(label string) PreviewInfo {
+	outDir := filepath.Join(previewRoot, "assetbundle", sanitizeLabel(label))
+	info := findBundlePreview(outDir)
+	info.OutputDir = outputDirForClient(outDir)
+	info.Exportable = assetBundleExportConfigured()
+	return info
+}
+
 func ensureAssetBundlePreview(label string, plainPath string, force bool) PreviewInfo {
+	return ensureAssetBundlePreviewWithProgress(label, plainPath, force, nil)
+}
+
+func ensureAssetBundlePreviewWithProgress(label string, plainPath string, force bool, report PreviewProgressReporter) PreviewInfo {
 	outDir := filepath.Join(previewRoot, "assetbundle", sanitizeLabel(label))
 	_ = os.MkdirAll(outDir, 0755)
 
 	if !force {
 		if info := findBundlePreview(outDir); info.Available {
+			reportPreviewProgress(report, 100, "cached", "")
 			info.OutputDir = outputDirForClient(outDir)
 			info.Exportable = assetBundleExportConfigured()
 			return info
@@ -275,18 +496,22 @@ func ensureAssetBundlePreview(label string, plainPath string, force bool) Previe
 			Exportable: false,
 		}
 	}
+	reportPreviewProgress(report, 20, "prepare", "")
 
 	if assetRipperConfigured() {
+		reportPreviewProgress(report, 46, "transcode", "assetripper")
 		if err := assetRipperExport(plainPath, outDir); err != nil {
 			debugLog("AssetRipper export failed: %v", err)
 		}
 	} else {
 		cmdLine := strings.ReplaceAll(os.Getenv("HAILSTORM_ASSETRIPPER_CMD"), "{input}", shellEscape(plainPath))
 		cmdLine = strings.ReplaceAll(cmdLine, "{output}", shellEscape(outDir))
+		reportPreviewProgress(report, 46, "transcode", "custom-command")
 		if err := exec.Command("sh", "-c", cmdLine).Run(); err != nil {
 			debugLog("Assetbundle export command failed: %v", err)
 		}
 	}
+	reportPreviewProgress(report, 94, "finalize", "")
 
 	info := findBundlePreview(outDir)
 	info.OutputDir = outputDirForClient(outDir)
@@ -295,6 +520,10 @@ func ensureAssetBundlePreview(label string, plainPath string, force bool) Previe
 }
 
 func findBundlePreview(dir string) PreviewInfo {
+	if prefab := findPrefabPreview(dir); prefab.Available {
+		return prefab
+	}
+
 	if img := firstMatchRecursive(dir, []string{"*.png", "*.jpg", "*.jpeg", "*.webp"}); img != "" {
 		ctype := "image/png"
 		ext := strings.ToLower(filepath.Ext(img))
@@ -361,6 +590,744 @@ func findBundlePreview(dir string) PreviewInfo {
 		}
 	}
 	return PreviewInfo{}
+}
+
+func findPrefabPreview(dir string) PreviewInfo {
+	assetsDir := filepath.Join(dir, "Assets")
+	prefabHierarchyDir := filepath.Join(assetsDir, "PrefabHierarchyObject")
+	bundleJSON := firstMatch(filepath.Join(assetsDir, "AssetBundle"), []string{"*.json"})
+	desc := parseBundleDescriptor(bundleJSON)
+
+	isPrefab := false
+	if info, err := os.Stat(prefabHierarchyDir); err == nil && info.IsDir() {
+		isPrefab = true
+	}
+	if strings.HasSuffix(strings.ToLower(desc.BundleName), ".prefab") {
+		isPrefab = true
+	}
+	if !isPrefab {
+		return PreviewInfo{}
+	}
+
+	items := collectPrefabItems(dir, prefabHierarchyDir)
+	primary, ok := pickPrimaryPreviewItem(items)
+	if !ok && len(items) == 0 {
+		items = nil
+	}
+
+	assetGroups, assetTotal := collectPrefabAssetGroups(assetsDir)
+	rootObjects := collectPrefabRootObjects(prefabHierarchyDir)
+	hierarchy := buildPrefabHierarchySummary(prefabHierarchyDir, items)
+	bundleName := strings.TrimSpace(desc.BundleName)
+	if bundleName == "" {
+		bundleName = filepath.Base(dir)
+	}
+
+	meta := map[string]any{
+		"bundleName":      bundleName,
+		"dependencies":    desc.Dependencies,
+		"dependencyCount": len(desc.Dependencies),
+		"assetGroups":     assetGroups,
+		"assetTotal":      assetTotal,
+		"rootObjects":     rootObjects,
+		"itemCount":       len(items),
+		"hierarchy":       hierarchy,
+	}
+
+	info := PreviewInfo{
+		Available: true,
+		Kind:      "prefab",
+		Source:    "derived",
+		Items:     items,
+		Meta:      meta,
+	}
+	if ok {
+		info.Path = primary.Path
+		info.ContentType = primary.ContentType
+	}
+	return info
+}
+
+func parseBundleDescriptor(path string) bundleDescriptor {
+	if strings.TrimSpace(path) == "" {
+		return bundleDescriptor{}
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return bundleDescriptor{}
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	deps := make([]string, 0, 16)
+	depSeen := map[string]struct{}{}
+	inDeps := false
+	name := ""
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if name == "" {
+			if match := bundleNameLineRE.FindStringSubmatch(line); len(match) > 1 {
+				name = strings.TrimSpace(match[1])
+			}
+		}
+
+		if !inDeps {
+			if strings.Contains(line, `"m_Dependencies"`) && strings.Contains(line, "[") {
+				inDeps = true
+				if strings.Contains(line, "]") {
+					inDeps = false
+				}
+			}
+			continue
+		}
+
+		if strings.Contains(line, "]") {
+			inDeps = false
+			continue
+		}
+
+		match := quotedStringLineRE.FindStringSubmatch(line)
+		if len(match) < 2 {
+			continue
+		}
+		dep := strings.TrimSpace(match[1])
+		if dep == "" {
+			continue
+		}
+		if _, exists := depSeen[dep]; exists {
+			continue
+		}
+		depSeen[dep] = struct{}{}
+		deps = append(deps, dep)
+	}
+
+	if name == "" {
+		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	return bundleDescriptor{
+		BundleName:   name,
+		Dependencies: deps,
+	}
+}
+
+func collectPrefabItems(dir string, prefabHierarchyDir string) []PreviewItem {
+	items := make([]PreviewItem, 0, 16)
+	seen := map[string]struct{}{}
+
+	addPath := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if _, exists := seen[path]; exists {
+			return
+		}
+		kind, ctype := previewKindAndTypeByExt(path)
+		if kind == "" {
+			return
+		}
+		seen[path] = struct{}{}
+		item := PreviewItem{
+			ID:          fmt.Sprintf("pf%03d", len(items)+1),
+			ContentType: ctype,
+			Path:        path,
+			Kind:        kind,
+			Name:        filepath.Base(path),
+		}
+		items = append(items, item)
+	}
+
+	for _, path := range collectMatchesRecursiveExt(prefabHierarchyDir, []string{".glb", ".gltf"}, 8) {
+		addPath(path)
+	}
+	for _, path := range collectMatchesRecursiveExt(dir, []string{".glb", ".gltf"}, 8) {
+		addPath(path)
+	}
+	for _, path := range collectMatchesRecursiveExt(dir, []string{".png", ".jpg", ".jpeg", ".webp"}, 8) {
+		addPath(path)
+	}
+	for _, path := range collectMatchesRecursiveExt(dir, []string{".mp4", ".webm"}, 4) {
+		addPath(path)
+	}
+	return items
+}
+
+func previewKindAndTypeByExt(path string) (string, string) {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	switch ext {
+	case ".png":
+		return "image", "image/png"
+	case ".jpg", ".jpeg":
+		return "image", "image/jpeg"
+	case ".webp":
+		return "image", "image/webp"
+	case ".mp4":
+		return "video", "video/mp4"
+	case ".webm":
+		return "video", "video/webm"
+	case ".glb":
+		return "model", "model/gltf-binary"
+	case ".gltf":
+		return "model", "model/gltf+json"
+	default:
+		return "", ""
+	}
+}
+
+func collectMatchesRecursiveExt(dir string, exts []string, limit int) []string {
+	if strings.TrimSpace(dir) == "" || len(exts) == 0 || limit == 0 {
+		return nil
+	}
+
+	extSet := map[string]struct{}{}
+	for _, ext := range exts {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		if ext == "" {
+			continue
+		}
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		extSet[ext] = struct{}{}
+	}
+	if len(extSet) == 0 {
+		return nil
+	}
+
+	matches := make([]string, 0, limit)
+	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if _, ok := extSet[ext]; !ok {
+			return nil
+		}
+		matches = append(matches, path)
+		return nil
+	})
+
+	if len(matches) == 0 {
+		return nil
+	}
+	sort.Strings(matches)
+	if limit > 0 && len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches
+}
+
+func pickPrimaryPreviewItem(items []PreviewItem) (PreviewItem, bool) {
+	if len(items) == 0 {
+		return PreviewItem{}, false
+	}
+
+	best := items[0]
+	bestRank := previewItemKindRank(best.Kind)
+	for _, item := range items[1:] {
+		rank := previewItemKindRank(item.Kind)
+		if rank < bestRank {
+			best = item
+			bestRank = rank
+		}
+	}
+	return best, true
+}
+
+func previewItemKindRank(kind string) int {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "model":
+		return 0
+	case "image":
+		return 1
+	case "video":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func collectPrefabAssetGroups(assetsDir string) ([]PrefabAssetGroup, int) {
+	entries, err := os.ReadDir(assetsDir)
+	if err != nil {
+		return nil, 0
+	}
+
+	groups := make([]PrefabAssetGroup, 0, len(entries))
+	total := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		count := countFilesRecursive(filepath.Join(assetsDir, entry.Name()))
+		if count == 0 {
+			continue
+		}
+		groups = append(groups, PrefabAssetGroup{
+			Name:  entry.Name(),
+			Count: count,
+		})
+		total += count
+	}
+
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Count == groups[j].Count {
+			return strings.ToLower(groups[i].Name) < strings.ToLower(groups[j].Name)
+		}
+		return groups[i].Count > groups[j].Count
+	})
+	return groups, total
+}
+
+func countFilesRecursive(root string) int {
+	count := 0
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		count++
+		return nil
+	})
+	return count
+}
+
+func collectPrefabRootObjects(prefabHierarchyDir string) []string {
+	if strings.TrimSpace(prefabHierarchyDir) == "" {
+		return nil
+	}
+	matches := collectMatchesRecursiveExt(prefabHierarchyDir, []string{".glb", ".gltf"}, 24)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		base := filepath.Base(match)
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+		if strings.TrimSpace(base) == "" {
+			continue
+		}
+		names = append(names, base)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+
+	sort.Strings(names)
+	uniq := names[:0]
+	last := ""
+	for _, name := range names {
+		if name == last {
+			continue
+		}
+		uniq = append(uniq, name)
+		last = name
+	}
+	return uniq
+}
+
+func buildPrefabHierarchySummary(prefabHierarchyDir string, items []PreviewItem) prefabHierarchySummary {
+	modelPath := findPrefabHierarchyModelPath(prefabHierarchyDir, items)
+	if modelPath == "" {
+		return prefabHierarchySummary{
+			Available: false,
+			Error:     "no model found",
+		}
+	}
+
+	doc, source, err := parseGLTFDocumentFromFile(modelPath)
+	if err != nil {
+		return prefabHierarchySummary{
+			Available: false,
+			Source:    source,
+			Error:     err.Error(),
+		}
+	}
+	if len(doc.Nodes) == 0 {
+		return prefabHierarchySummary{
+			Available: false,
+			Source:    source,
+			Error:     "empty nodes",
+		}
+	}
+
+	rootIndices := gltfRootNodeIndices(doc)
+	if len(rootIndices) == 0 {
+		return prefabHierarchySummary{
+			Available: false,
+			Source:    source,
+			Error:     "no root nodes",
+			NodeCount: len(doc.Nodes),
+		}
+	}
+
+	rendered := 0
+	maxDepth := 0
+	truncated := false
+	componentCounter := map[string]int{}
+	roots := make([]prefabHierarchyNode, 0, len(rootIndices))
+	path := map[int]bool{}
+
+	for _, root := range rootIndices {
+		if rendered >= prefabHierarchyMaxNodes {
+			truncated = true
+			break
+		}
+		node := buildPrefabHierarchyNode(
+			doc.Nodes,
+			root,
+			0,
+			prefabHierarchyMaxNodes,
+			&rendered,
+			&maxDepth,
+			&truncated,
+			componentCounter,
+			path,
+		)
+		roots = append(roots, node)
+	}
+
+	if rendered < len(doc.Nodes) && rendered >= prefabHierarchyMaxNodes {
+		truncated = true
+	}
+
+	return prefabHierarchySummary{
+		Available:         true,
+		Source:            source,
+		NodeCount:         len(doc.Nodes),
+		RenderedNodeCount: rendered,
+		RootCount:         len(rootIndices),
+		MaxDepth:          maxDepth,
+		Truncated:         truncated,
+		ComponentStats:    sortPrefabComponentStats(componentCounter),
+		Roots:             roots,
+	}
+}
+
+func findPrefabHierarchyModelPath(prefabHierarchyDir string, items []PreviewItem) string {
+	matches := collectMatchesRecursiveExt(prefabHierarchyDir, []string{".glb", ".gltf"}, 1)
+	if len(matches) > 0 && fileExists(matches[0]) {
+		return matches[0]
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Kind), "model") && fileExists(item.Path) {
+			return item.Path
+		}
+	}
+	return ""
+}
+
+func parseGLTFDocumentFromFile(path string) (gltfDocument, string, error) {
+	path = strings.TrimSpace(path)
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".glb":
+		chunk, err := readGLBJSONChunk(path)
+		if err != nil {
+			return gltfDocument{}, "glb", err
+		}
+		doc := gltfDocument{}
+		if err := json.Unmarshal(chunk, &doc); err != nil {
+			return gltfDocument{}, "glb", err
+		}
+		return doc, "glb", nil
+	case ".gltf":
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return gltfDocument{}, "gltf", err
+		}
+		doc := gltfDocument{}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return gltfDocument{}, "gltf", err
+		}
+		return doc, "gltf", nil
+	default:
+		return gltfDocument{}, ext, fmt.Errorf("unsupported model format: %s", ext)
+	}
+}
+
+func readGLBJSONChunk(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 20 {
+		return nil, errors.New("invalid glb: too small")
+	}
+	if string(raw[:4]) != "glTF" {
+		return nil, errors.New("invalid glb magic")
+	}
+
+	totalLength := int(binary.LittleEndian.Uint32(raw[8:12]))
+	limit := len(raw)
+	if totalLength > 0 && totalLength < limit {
+		limit = totalLength
+	}
+
+	const jsonChunkType = 0x4E4F534A // "JSON" little-endian
+	offset := 12
+	for offset+8 <= limit {
+		chunkLength := int(binary.LittleEndian.Uint32(raw[offset : offset+4]))
+		chunkType := binary.LittleEndian.Uint32(raw[offset+4 : offset+8])
+		offset += 8
+		if chunkLength < 0 || offset+chunkLength > limit {
+			return nil, errors.New("invalid glb chunk bounds")
+		}
+		chunk := raw[offset : offset+chunkLength]
+		offset += chunkLength
+		if chunkType == jsonChunkType {
+			chunk = bytes.TrimRight(chunk, "\x00 \n\r\t")
+			if len(chunk) == 0 {
+				return nil, errors.New("empty glb json chunk")
+			}
+			return chunk, nil
+		}
+	}
+	return nil, errors.New("glb json chunk not found")
+}
+
+func gltfRootNodeIndices(doc gltfDocument) []int {
+	valid := func(index int) bool {
+		return index >= 0 && index < len(doc.Nodes)
+	}
+	uniqueValid := func(indices []int) []int {
+		out := make([]int, 0, len(indices))
+		seen := map[int]struct{}{}
+		for _, index := range indices {
+			if !valid(index) {
+				continue
+			}
+			if _, ok := seen[index]; ok {
+				continue
+			}
+			seen[index] = struct{}{}
+			out = append(out, index)
+		}
+		return out
+	}
+
+	if doc.Scene != nil && *doc.Scene >= 0 && *doc.Scene < len(doc.Scenes) {
+		roots := uniqueValid(doc.Scenes[*doc.Scene].Nodes)
+		if len(roots) > 0 {
+			return roots
+		}
+	}
+	if len(doc.Scenes) > 0 {
+		roots := uniqueValid(doc.Scenes[0].Nodes)
+		if len(roots) > 0 {
+			return roots
+		}
+	}
+
+	referenced := map[int]struct{}{}
+	for _, node := range doc.Nodes {
+		for _, child := range node.Children {
+			if valid(child) {
+				referenced[child] = struct{}{}
+			}
+		}
+	}
+
+	roots := make([]int, 0, len(doc.Nodes))
+	for index := range doc.Nodes {
+		if _, used := referenced[index]; used {
+			continue
+		}
+		roots = append(roots, index)
+	}
+	if len(roots) == 0 && len(doc.Nodes) > 0 {
+		return []int{0}
+	}
+	return roots
+}
+
+func buildPrefabHierarchyNode(
+	nodes []gltfNode,
+	index int,
+	depth int,
+	maxNodes int,
+	rendered *int,
+	maxDepth *int,
+	truncated *bool,
+	componentCounter map[string]int,
+	path map[int]bool,
+) prefabHierarchyNode {
+	if index < 0 || index >= len(nodes) {
+		return prefabHierarchyNode{
+			Name:       fmt.Sprintf("Invalid node #%d", index),
+			Index:      index,
+			Components: []string{"Invalid"},
+		}
+	}
+	if path[index] {
+		return prefabHierarchyNode{
+			Name:       fmt.Sprintf("%s (cycle)", prefabNodeName(nodes[index], index)),
+			Index:      index,
+			Components: []string{"Cycle"},
+		}
+	}
+
+	path[index] = true
+	defer delete(path, index)
+
+	*rendered = *rendered + 1
+	if depth > *maxDepth {
+		*maxDepth = depth
+	}
+
+	node := nodes[index]
+	components := derivePrefabNodeComponents(node)
+	for _, component := range components {
+		componentCounter[component]++
+	}
+
+	treeNode := prefabHierarchyNode{
+		Name:       prefabNodeName(node, index),
+		Index:      index,
+		Components: components,
+	}
+
+	if len(node.Children) == 0 {
+		return treeNode
+	}
+	children := make([]prefabHierarchyNode, 0, len(node.Children))
+	for _, child := range node.Children {
+		if *rendered >= maxNodes {
+			*truncated = true
+			break
+		}
+		childNode := buildPrefabHierarchyNode(
+			nodes,
+			child,
+			depth+1,
+			maxNodes,
+			rendered,
+			maxDepth,
+			truncated,
+			componentCounter,
+			path,
+		)
+		children = append(children, childNode)
+	}
+	if len(children) > 0 {
+		treeNode.Children = children
+	}
+	return treeNode
+}
+
+func prefabNodeName(node gltfNode, index int) string {
+	name := strings.TrimSpace(node.Name)
+	if name == "" {
+		return fmt.Sprintf("Node %d", index)
+	}
+	return name
+}
+
+func derivePrefabNodeComponents(node gltfNode) []string {
+	components := make([]string, 0, 8)
+	appendUnique := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range components {
+			if existing == value {
+				return
+			}
+		}
+		components = append(components, value)
+	}
+
+	appendUnique("Transform")
+	if node.Mesh != nil && node.Skin != nil {
+		appendUnique("SkinnedMeshRenderer")
+	} else if node.Mesh != nil {
+		appendUnique("MeshRenderer")
+	}
+	if node.Skin != nil && node.Mesh == nil {
+		appendUnique("Skin")
+	}
+	if node.Camera != nil {
+		appendUnique("Camera")
+	}
+	if len(node.Weights) > 0 {
+		appendUnique("BlendShape")
+	}
+	if hasNonZeroVec(node.Translation, 0) {
+		appendUnique("Position")
+	}
+	if hasNonIdentityQuaternion(node.Rotation) {
+		appendUnique("Rotation")
+	}
+	if hasNonUnitScale(node.Scale) {
+		appendUnique("Scale")
+	}
+
+	lowerName := strings.ToLower(strings.TrimSpace(node.Name))
+	if strings.Contains(lowerName, "collider") {
+		appendUnique("Collider")
+	}
+	if strings.Contains(lowerName, "light") {
+		appendUnique("Light")
+	}
+	if strings.Contains(lowerName, "bone") {
+		appendUnique("Bone")
+	}
+	return components
+}
+
+func hasNonZeroVec(values []float64, zero float64) bool {
+	for _, value := range values {
+		if math.Abs(value-zero) > 1e-6 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonIdentityQuaternion(values []float64) bool {
+	if len(values) != 4 {
+		return len(values) > 0
+	}
+	return math.Abs(values[0]) > 1e-6 ||
+		math.Abs(values[1]) > 1e-6 ||
+		math.Abs(values[2]) > 1e-6 ||
+		math.Abs(values[3]-1) > 1e-6
+}
+
+func hasNonUnitScale(values []float64) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, value := range values {
+		if math.Abs(value-1) > 1e-6 {
+			return true
+		}
+	}
+	return false
+}
+
+func sortPrefabComponentStats(counter map[string]int) []prefabComponentStat {
+	if len(counter) == 0 {
+		return nil
+	}
+	stats := make([]prefabComponentStat, 0, len(counter))
+	for name, count := range counter {
+		stats = append(stats, prefabComponentStat{
+			Name:  name,
+			Count: count,
+		})
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].Count == stats[j].Count {
+			return stats[i].Name < stats[j].Name
+		}
+		return stats[i].Count > stats[j].Count
+	})
+	return stats
 }
 
 func firstMatch(dir string, patterns []string) string {
@@ -653,13 +1620,13 @@ func ensureUsmDerivedVideo(inputPath string) (string, bool) {
 	if isFresh(outPath, inputPath) {
 		return outPath, true
 	}
-	if !transcodeUsmToMp4(inputPath, "", outPath) {
+	if !transcodeUsmToMp4(inputPath, "", outPath, nil) {
 		return "", false
 	}
 	return outPath, true
 }
 
-func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath string) bool {
+func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath string, report PreviewProgressReporter) bool {
 	// Prefer remux first for speed and to preserve original H.264 bitstream.
 	// Some USM files carry no audio stream, so optional ACB companion audio can
 	// be mapped as input #1.
@@ -668,6 +1635,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 		// deterministic PTS/DTS from frame index so we can keep H.264 bitstream.
 		fps := detectVideoFPS(inputPath)
 		setTS := fmt.Sprintf("setts=pts=N/%.6f/TB:dts=N/%.6f/TB", fps, fps)
+		reportPreviewProgress(report, 56, "remux", "")
 		remuxWithAudioArgs := []string{
 			"-hide_banner",
 			"-loglevel", "error",
@@ -689,6 +1657,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 		}
 
 		// Fallback when stream-copy muxing still fails on specific files.
+		reportPreviewProgress(report, 76, "transcode", "")
 		transcodeWithAudioArgs := []string{
 			"-hide_banner",
 			"-loglevel", "error",
@@ -712,6 +1681,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 	}
 
 	// USM-contained audio stream is optional.
+	reportPreviewProgress(report, 56, "remux", "")
 	remuxArgs := []string{
 		"-hide_banner",
 		"-loglevel", "error",
@@ -730,6 +1700,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 	}
 
 	// Fallback to full transcode when remux fails on specific streams.
+	reportPreviewProgress(report, 76, "transcode", "")
 	transcodeArgs := []string{
 		"-hide_banner",
 		"-loglevel", "error",
