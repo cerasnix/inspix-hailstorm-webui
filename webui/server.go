@@ -220,23 +220,32 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
 	field := strings.TrimSpace(r.URL.Query().Get("field"))
 	withModTime := strings.TrimSpace(r.URL.Query().Get("withModTime")) == "1"
+	withMeta := strings.TrimSpace(r.URL.Query().Get("withMeta")) == "1"
 	filtered := filterEntries(entries, query, field)
 
 	type item struct {
-		Label        string `json:"label"`
-		Name         string `json:"name"`
-		Type         string `json:"type"`
-		Size         uint64 `json:"size"`
-		ResourceType uint32 `json:"resourceType"`
-		RealName     string `json:"realName"`
-		ModifiedAt   int64  `json:"modifiedAt,omitempty"`
+		Label        string   `json:"label"`
+		Name         string   `json:"name"`
+		Type         string   `json:"type"`
+		Size         uint64   `json:"size"`
+		ResourceType uint32   `json:"resourceType"`
+		RealName     string   `json:"realName"`
+		Categories   []string `json:"categories,omitempty"`
+		ContentTypes []string `json:"contentTypes,omitempty"`
+		ModifiedAt   int64    `json:"modifiedAt,omitempty"`
 	}
 
 	resp := make([]item, 0, len(filtered))
 	for _, entry := range filtered {
 		modifiedAt := int64(0)
+		var categories []string
+		var contentTypes []string
 		if withModTime {
 			modifiedAt = entryModifiedAtUnix(entry)
+		}
+		if withMeta {
+			categories = append([]string(nil), entry.StrCategoryCrcs...)
+			contentTypes = append([]string(nil), entry.StrContentTypeCrcs...)
 		}
 		resp = append(resp, item{
 			Label:        entry.StrLabelCrc,
@@ -245,6 +254,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			Size:         entry.Size,
 			ResourceType: entry.ResourceType,
 			RealName:     entry.RealName,
+			Categories:   categories,
+			ContentTypes: contentTypes,
 			ModifiedAt:   modifiedAt,
 		})
 	}

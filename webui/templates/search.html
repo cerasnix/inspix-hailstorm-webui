@@ -42,6 +42,19 @@
         Clear
       </button>
     </div>
+    <div class="search-filter-strategy">
+      <div class="control-group">
+        <label for="chipMatchMode" data-i18n="search.matchModeLabel">Chip match</label>
+        <select id="chipMatchMode" class="form-select">
+          <option value="any" data-i18n="search.matchModeAny">Any in same group</option>
+          <option value="all" data-i18n="search.matchModeAll">All in same group</option>
+        </select>
+      </div>
+      <div id="activeFilterSummary" class="search-filter-summary text-muted"></div>
+      <button id="searchClearFilters" class="btn btn-outline-dark btn-sm" type="button" data-i18n="search.clearFilters">
+        Clear filters only
+      </button>
+    </div>
 
     <div class="filter-block">
       <span class="filter-title" data-i18n="home.filterMedia">Media</span>
@@ -54,6 +67,25 @@
     <div class="filter-block">
       <span class="filter-title" data-i18n="search.filterTags">Tags</span>
       <div id="tagFilters" class="chip-row"></div>
+    </div>
+    <div class="search-control-divider"></div>
+    <div class="filter-block">
+      <span class="filter-title" data-i18n="search.filterNamingPrefix">Naming prefix</span>
+      <div id="namingPrefixFilters" class="chip-row"></div>
+    </div>
+    <div class="rule-filter-grid">
+      <div class="filter-block">
+        <span class="filter-title" data-i18n="search.filterCostumeSeries">Costume series</span>
+        <div id="namingSeriesFilters" class="chip-row"></div>
+      </div>
+      <div class="filter-block">
+        <span class="filter-title" data-i18n="search.filterCodeCharacter">Code character</span>
+        <div id="namingCharacterFilters" class="chip-row"></div>
+      </div>
+      <div class="filter-block">
+        <span class="filter-title" data-i18n="search.filterVariant">Variant</span>
+        <div id="namingVariantFilters" class="chip-row"></div>
+      </div>
     </div>
 
     <div class="search-control-divider"></div>
@@ -172,6 +204,7 @@
         ></div>
       </div>
     </div>
+    <div id="activeFilterBar" class="search-active-filter-bar d-none"></div>
     <div id="diffSummaryText" class="search-diff-summary text-muted"></div>
     <div id="searchResults" class="result-grid"></div>
     <div id="pagination" class="pagination-shell"></div>

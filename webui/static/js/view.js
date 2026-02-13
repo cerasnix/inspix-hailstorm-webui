@@ -326,6 +326,7 @@ function scoreAssemblyTextureCandidate(candidate, entry, meshName = "") {
     `${candidate?.label || ""} ${materials.join(" ")}`
   );
   const targetTokens = buildAssemblyTokenSet([
+    entry?.rootLabel || "",
     entry?.label || "",
     entry?.name || "",
     meshName || "",
@@ -338,12 +339,17 @@ function scoreAssemblyTextureCandidate(candidate, entry, meshName = "") {
   ]);
 
   let score = assemblyTextureRoleWeight(role);
-  const ownerMatched = owners.includes(String(entry?.label || ""));
+  const ownerLabels = [entry?.label || "", entry?.rootLabel || ""]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const ownerMatched = ownerLabels.some((label) => owners.includes(label));
   if (ownerMatched) {
     score += 52;
   }
 
-  const ownerIdentity = assemblyIdentityToken(entry?.label || "");
+  const ownerIdentity =
+    assemblyIdentityToken(entry?.label || "") ||
+    assemblyIdentityToken(entry?.rootLabel || "");
   const candidateIdentity = assemblyIdentityToken(candidate?.label || "");
   if (ownerIdentity && candidateIdentity) {
     if (ownerIdentity === candidateIdentity) {
@@ -445,10 +451,17 @@ function selectAssemblyTextureCandidate(candidates, entry, meshName = "") {
   if (!available.length) {
     return null;
   }
-  const ownerLabel = String(entry.label || "");
-  const ownerMatchedPool = available.filter((candidate) =>
-    Array.isArray(candidate?.owners) ? candidate.owners.includes(ownerLabel) : false
-  );
+  const ownerLabels = [entry?.label || "", entry?.rootLabel || ""]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const ownerLabel = ownerLabels[0] || "";
+  const strictIdentityMode = String(entry?.rootLabel || "")
+    .toLowerCase()
+    .startsWith("3d_item_");
+  const ownerMatchedPool = available.filter((candidate) => {
+    const owners = Array.isArray(candidate?.owners) ? candidate.owners : [];
+    return ownerLabels.some((label) => owners.includes(label));
+  });
   let pool = ownerMatchedPool.length ? ownerMatchedPool : available;
   const targetDomain = assemblyTextureDomain(`${entry?.name || ""} ${meshName || ""}`);
   if (targetDomain !== "unknown") {
@@ -471,7 +484,9 @@ function selectAssemblyTextureCandidate(candidates, entry, meshName = "") {
       pool = readyPool;
     }
   }
-  const ownerIdentity = assemblyIdentityToken(ownerLabel);
+  const ownerIdentity =
+    assemblyIdentityToken(ownerLabel) ||
+    assemblyIdentityToken(entry?.rootLabel || "");
   if (ownerIdentity) {
     const exactMatched = pool.filter(
       (candidate) =>
@@ -494,12 +509,17 @@ function selectAssemblyTextureCandidate(candidates, entry, meshName = "") {
         if (relatedMatched.length) {
           pool = relatedMatched;
         } else {
-          const nonMismatch = pool.filter(
-            (candidate) =>
-              assemblyCandidateIdentityState(candidate, ownerIdentity) !== "mismatch"
-          );
+          const nonMismatch = pool.filter((candidate) => {
+            const state = assemblyCandidateIdentityState(candidate, ownerIdentity);
+            if (strictIdentityMode) {
+              return false;
+            }
+            return state !== "mismatch";
+          });
           if (nonMismatch.length) {
             pool = nonMismatch;
+          } else if (strictIdentityMode) {
+            pool = [];
           }
         }
       }
@@ -521,9 +541,10 @@ function selectAssemblyTextureCandidate(candidates, entry, meshName = "") {
       return null;
     }
     const ownerMatched = Array.isArray(best.owners)
-      ? best.owners.includes(ownerLabel)
+      ? ownerLabels.some((label) => best.owners.includes(label))
       : false;
-    if (bestScore < 20 && !ownerMatched) {
+    const minScore = strictIdentityMode ? 64 : 20;
+    if (bestScore < minScore && !ownerMatched) {
       return null;
     }
     return best;
@@ -1550,6 +1571,11 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
   let rafId = 0;
   let resizeOff = () => {};
   let cleanupRenderer = () => {};
+  let showAutoDuplicates = false;
+  let autoDuplicateCount = 0;
+  const sizeDedupEnabled = String(rootLabel || "")
+    .toLowerCase()
+    .startsWith("3d_item_");
   const textureCandidates = Array.isArray(hooks?.textureCandidates)
     ? hooks.textureCandidates.filter((item) => item && item.label)
     : [];
@@ -1988,9 +2014,34 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
       const refreshVisibility = () => {
         entries.forEach((entry) => {
           if (entry.object) {
-            entry.object.visible = Boolean(entry.enabled);
+            const duplicateHidden =
+              sizeDedupEnabled &&
+              Boolean(entry.isAutoDuplicate) &&
+              !showAutoDuplicates;
+            entry.object.visible = Boolean(entry.enabled) && !duplicateHidden;
+          }
+          if (entry.checkbox) {
+            entry.checkbox.disabled =
+              sizeDedupEnabled &&
+              Boolean(entry.isAutoDuplicate) &&
+              !showAutoDuplicates;
+          }
+          if (entry.row) {
+            entry.row.classList.toggle(
+              "duplicate-hidden",
+              sizeDedupEnabled &&
+                Boolean(entry.isAutoDuplicate) &&
+                !showAutoDuplicates
+            );
           }
         });
+        if (hooks.onDuplicateUpdate) {
+          hooks.onDuplicateUpdate({
+            enabled: sizeDedupEnabled,
+            count: autoDuplicateCount,
+            show: showAutoDuplicates,
+          });
+        }
         fitCameraToVisible();
       };
 
@@ -2167,10 +2218,41 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
         hooks.onReady({
           applyPosePreset,
           exportAsGlb,
+          setShowAutoDuplicates(flag) {
+            showAutoDuplicates = Boolean(flag);
+            refreshVisibility();
+          },
         });
       }
 
       const loader = new GLTFLoader();
+      const sizeBuckets = new Map();
+      const parseGltfFromArrayBuffer = (url, buffer) =>
+        new Promise((resolve, reject) => {
+          const baseUrl = String(url || "").replace(/[^/]*$/, "");
+          loader.parse(
+            buffer,
+            baseUrl,
+            (gltf) => resolve(gltf),
+            (err) => reject(err || new Error("parse failed"))
+          );
+        });
+
+      const loadAssemblyEntry = async (url) => {
+        const response = await fetch(url, {
+          method: "GET",
+          cache: "force-cache",
+        });
+        if (!response.ok) {
+          throw new Error(`http ${response.status}`);
+        }
+        const buffer = await response.arrayBuffer();
+        const gltf = await parseGltfFromArrayBuffer(url, buffer);
+        return {
+          gltf,
+          byteSize: Number(buffer.byteLength || 0),
+        };
+      };
       const loadAll = async () => {
         let loaded = 0;
         let failed = 0;
@@ -2183,8 +2265,10 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
           }
           const label = entry.label || rootLabel;
           const itemId = entry.itemId || "";
+          const url = previewItemUrl(label, itemId);
           try {
-            const gltf = await loader.loadAsync(previewItemUrl(label, itemId));
+            const payload = await loadAssemblyEntry(url);
+            const gltf = payload.gltf;
             if (disposed) {
               return;
             }
@@ -2200,12 +2284,43 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
             object.visible = Boolean(entry.enabled);
             root.add(object);
             entry.object = object;
+            entry.byteSize = Number(payload.byteSize || 0);
+
+            if (sizeDedupEnabled && entry.byteSize > 0) {
+              const key = String(entry.byteSize);
+              if (sizeBuckets.has(key)) {
+                const first = sizeBuckets.get(key);
+                entry.isAutoDuplicate = true;
+                entry.duplicateOf = first || null;
+                entry.enabled = false;
+                if (entry.checkbox) {
+                  entry.checkbox.checked = false;
+                }
+                if (entry.row) {
+                  entry.row.classList.add("duplicate");
+                }
+                if (entry.metaNode) {
+                  const line = document.createElement("div");
+                  line.className = "prefab-assembly-duplicate-meta";
+                  line.textContent = I18n.t("view.prefabAssemblyDuplicateItem", {
+                    size: App.formatBytes(entry.byteSize),
+                  });
+                  entry.metaNode.appendChild(line);
+                }
+                autoDuplicateCount += 1;
+              } else {
+                sizeBuckets.set(key, entry);
+                entry.isAutoDuplicate = false;
+              }
+            }
+
             await applyAssemblyTextures(entry, object);
             loaded += 1;
             if (entry.row) {
               entry.row.classList.add("loaded");
             }
             refreshRigInfo();
+            refreshVisibility();
           } catch (err) {
             failed += 1;
             if (!firstFailureReason) {
@@ -2224,6 +2339,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
         }
         updateStatus(loaded, failed, true, firstFailureReason);
         refreshRigInfo();
+        refreshVisibility();
       };
 
       const render = () => {
@@ -2281,6 +2397,9 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
 }
 
 function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
+  const sizeDedupEnabled = String(rootLabel || "")
+    .toLowerCase()
+    .startsWith("3d_item_");
   const section = document.createElement("section");
   section.className = "prefab-section prefab-assembly";
 
@@ -2332,6 +2451,20 @@ function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
   prepareButton.textContent = I18n.t("view.prefabAssemblyPrepareButton", { count: "0" });
   prepareButton.disabled = true;
   controls.appendChild(prepareButton);
+
+  const duplicateToggle = document.createElement("label");
+  duplicateToggle.className = "prefab-assembly-toggle";
+  if (!sizeDedupEnabled) {
+    duplicateToggle.classList.add("d-none");
+  }
+  const duplicateToggleInput = document.createElement("input");
+  duplicateToggleInput.type = "checkbox";
+  duplicateToggleInput.disabled = true;
+  const duplicateToggleText = document.createElement("span");
+  duplicateToggleText.textContent = I18n.t("view.prefabAssemblyShowDuplicates");
+  duplicateToggle.appendChild(duplicateToggleInput);
+  duplicateToggle.appendChild(duplicateToggleText);
+  controls.appendChild(duplicateToggle);
   section.appendChild(controls);
 
   const pendingHint = document.createElement("div");
@@ -2342,6 +2475,10 @@ function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
   rigInfo.className = "prefab-assembly-rig";
   rigInfo.textContent = I18n.t("view.prefabRigDetecting");
   section.appendChild(rigInfo);
+
+  const duplicateInfo = document.createElement("div");
+  duplicateInfo.className = "prefab-assembly-dedup d-none";
+  section.appendChild(duplicateInfo);
 
   const exportProgress = document.createElement("div");
   exportProgress.className = "preview-export-progress prefab-assembly-export d-none";
@@ -2518,13 +2655,18 @@ function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
 
       return {
         label: component.label || rootLabel,
+        rootLabel: rootLabel || "",
         itemId: component.itemId || "",
         name: component.name || "",
         type: component.type || "",
         source: component.source || "",
         enabled: true,
+        isAutoDuplicate: false,
+        duplicateOf: null,
+        byteSize: 0,
         object: null,
         checkbox,
+        metaNode: meta,
         row,
       };
     });
@@ -2545,6 +2687,28 @@ function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
   let viewerApi = null;
   let rigAvailable = false;
   let preparingPending = false;
+  const updateDuplicateInfo = ({ enabled, count, show }) => {
+    if (!enabled || !count) {
+      duplicateInfo.classList.add("d-none");
+      return;
+    }
+    duplicateInfo.classList.remove("d-none");
+    duplicateInfo.textContent = show
+      ? I18n.t("view.prefabAssemblyDuplicateBySizeShown", {
+          count: String(count),
+        })
+      : I18n.t("view.prefabAssemblyDuplicateBySize", {
+          count: String(count),
+        });
+  };
+
+  duplicateToggleInput.onchange = () => {
+    if (!viewerApi || typeof viewerApi.setShowAutoDuplicates !== "function") {
+      return;
+    }
+    viewerApi.setShowAutoDuplicates(duplicateToggleInput.checked);
+  };
+
   poseApplyButton.onclick = () => {
     if (!viewerApi || !rigAvailable) {
       return;
@@ -2716,6 +2880,10 @@ function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
         onReady(api) {
           viewerApi = api;
           exportButton.disabled = false;
+          duplicateToggleInput.disabled = !sizeDedupEnabled;
+          if (sizeDedupEnabled && typeof viewerApi.setShowAutoDuplicates === "function") {
+            viewerApi.setShowAutoDuplicates(duplicateToggleInput.checked);
+          }
         },
         onRigUpdate(info) {
           rigAvailable = Boolean(info?.available);
@@ -2733,6 +2901,9 @@ function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
           rigInfo.textContent = info.humanoid
             ? I18n.t("view.prefabRigHumanoid", payload)
             : I18n.t("view.prefabRigGeneric", payload);
+        },
+        onDuplicateUpdate(payload) {
+          updateDuplicateInfo(payload || { enabled: false, count: 0, show: false });
         },
       })
     );

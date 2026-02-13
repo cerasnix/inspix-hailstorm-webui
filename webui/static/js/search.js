@@ -7,6 +7,11 @@ let state = {
   media: [],
   character: [],
   tags: [],
+  namingPrefixes: [],
+  namingSeries: [],
+  namingCodeCharacters: [],
+  namingVariants: [],
+  chipMatchMode: "any",
   type: "",
   view: "grid",
   diffFrom: "",
@@ -24,6 +29,85 @@ const listViewAutoPerPage = 72;
 const diffFilterYieldChunk = 1600;
 let diffProgressToken = 0;
 let diffProgressHideTimer = null;
+let namingFilterConfig = {
+  prefixes: [],
+  series: [],
+  codeCharacters: [],
+  variants: [],
+};
+let filterCountCache = {
+  media: new Map(),
+  character: new Map(),
+  tags: new Map(),
+};
+
+const characterCodeMap = {
+  "1021": { key: "kozue", name: "Kozue" },
+  "1022": { key: "tsuzuri", name: "Tsuzuri" },
+  "1023": { key: "megumi", name: "Megumi" },
+  "1031": { key: "kaho", name: "Kaho" },
+  "1032": { key: "sayaka", name: "Sayaka" },
+  "1033": { key: "rurino", name: "Rurino" },
+  "1041": { key: "ginko", name: "Ginko" },
+  "1042": { key: "kosuzu", name: "Kosuzu" },
+  "1043": { key: "hime", name: "Hime" },
+  "1051": { key: "izumi", name: "Izumi" },
+  "1052": { key: "ceras", name: "Ceras" },
+  "9007": { key: "sachi", name: "Sachi" },
+};
+
+const defaultCostumeSeriesHints = {
+  "1001": "冬季校服 / Winter Uniform",
+  "1002": "夏季校服 / Summer Uniform",
+  "1003": "夏季校服(变体) / Summer Uniform (Alt)",
+  "1004": "冬季运动服 / Winter Sportswear",
+  "1005": "夏季运动服 / Summer Sportswear",
+  "1006": "冬季校服(差分) / Winter Uniform (Alt)",
+  "1007": "冬季大衣 / Winter Coat",
+  "1008": "冬季校服(特例) / Winter Uniform (Special)",
+  "1009": "瑞河夏季校服 / Mizukawa Summer Uniform",
+  "1010": "瑞河冬季大衣 / Mizukawa Winter Coat",
+  "2001": "滑冰服 / Skating Outfit",
+  "2002": "夏季校服(围裙) / Summer Uniform (Apron)",
+  "2003": "浴巾造型 / Bath Towel",
+  "2004": "睡衣 / Pajamas",
+  "2006": "滑冰服 / Skating Outfit",
+  "2007": "夏季私服 / Summer Casual",
+  "2008": "家居服 / Homewear",
+  "2009": "滑冰比赛服 / Skating Competition",
+  "2014": "泳衣 / Swimsuit",
+  "2015": "Tsuzuri家睡衣 / Tsuzuri House Pajamas",
+  "2016": "店员服 / Staff Uniform",
+  "2017": "睡衣(差分) / Pajamas (Alt)",
+  "2019": "和服 / Kimono",
+  "2020": "春秋私服 / Spring-Autumn Casual",
+  "2021": "冬季私服 / Winter Casual",
+  "2022": "夏季私服 / Summer Casual",
+  "2023": "大学私服 / College Casual",
+  "3001": "DB打歌服 / Performance Costume",
+};
+
+let costumeSeriesHints = { ...defaultCostumeSeriesHints };
+let costumeSeriesLoadPromise = null;
+let costumeModelHints = {};
+
+const namingPrefixHints = {
+  "3d_costume": "3D Costume",
+  "3d_face": "3D Face",
+  "3d_hair": "3D Hair",
+  "3d_accessory": "3D Accessory",
+  "3d_item": "3D Item",
+  "3d_prop": "3D Prop",
+  "3d_stage": "3D Stage",
+  bgm: "BGM",
+  vo: "Voice",
+  se: "SFX",
+  story: "Story",
+  quest: "Quest",
+  mot: "Motion",
+  ui: "UI",
+  icon: "Icon",
+};
 
 function yieldToUI() {
   return new Promise((resolve) => {
@@ -178,12 +262,516 @@ function renderDiffSummary(entries) {
   });
 }
 
+function detectNamingPrefix(label) {
+  const normalized = String(label || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  const parts = normalized.split("_").filter(Boolean);
+  if (!parts.length) {
+    return "";
+  }
+  if (parts[0] === "3d" && parts.length >= 2) {
+    return `3d_${parts[1]}`;
+  }
+  return parts[0];
+}
+
+function inferCharacterCode(digits) {
+  const normalized = String(digits || "");
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length === 10) {
+    return normalized.slice(4, 8);
+  }
+  if (normalized.length >= 6) {
+    const head = normalized.slice(0, 4);
+    if (characterCodeMap[head]) {
+      return head;
+    }
+    let best = "";
+    let bestPos = -1;
+    Object.keys(characterCodeMap).forEach((code) => {
+      const pos = normalized.lastIndexOf(code);
+      if (pos > bestPos) {
+        best = code;
+        bestPos = pos;
+      }
+    });
+    if (best) {
+      return best;
+    }
+    return head;
+  }
+  return "";
+}
+
+function inferVariantCode(digits) {
+  const normalized = String(digits || "");
+  if (normalized.length < 2) {
+    return "";
+  }
+  return normalized.slice(-2);
+}
+
+function entryTraits(entry) {
+  if (entry._traits) {
+    return entry._traits;
+  }
+
+  const label = String(entry.label || "").trim();
+  const normalized = label.toLowerCase();
+  const traits = {
+    prefix: detectNamingPrefix(normalized),
+    isCostume: false,
+    digits: "",
+    seriesCode: "",
+    characterCode: "",
+    characterKey: "",
+    characterName: "",
+    variantCode: "",
+    modelLabel: "",
+  };
+
+  const costumeMatch = normalized.match(/^3d_costume_(\d{10})$/);
+  if (costumeMatch) {
+    traits.isCostume = true;
+    traits.digits = costumeMatch[1];
+    traits.seriesCode = traits.digits.slice(0, 4);
+    traits.characterCode = inferCharacterCode(traits.digits);
+    traits.variantCode = inferVariantCode(traits.digits);
+  } else {
+    const genericDigits = normalized.match(/^3d_[a-z0-9]+_(\d{6,10})$/);
+    if (genericDigits) {
+      traits.digits = genericDigits[1];
+      traits.characterCode = inferCharacterCode(traits.digits);
+      if (
+        traits.prefix === "3d_face" ||
+        traits.prefix === "3d_hair" ||
+        traits.prefix === "3d_costume"
+      ) {
+        traits.variantCode = inferVariantCode(traits.digits);
+      }
+    }
+  }
+
+  if (traits.isCostume && traits.digits && costumeModelHints[traits.digits]) {
+    const modelHint = costumeModelHints[traits.digits];
+    if (modelHint.seriesCode) {
+      traits.seriesCode = String(modelHint.seriesCode).padStart(4, "0");
+    }
+    if (modelHint.characterCode) {
+      traits.characterCode = String(modelHint.characterCode).padStart(4, "0");
+    }
+    if (modelHint.hairStyleId) {
+      traits.variantCode = String(modelHint.hairStyleId).padStart(2, "0");
+    }
+    if (modelHint.label) {
+      traits.modelLabel = modelHint.label;
+    }
+  }
+
+  if (traits.characterCode && characterCodeMap[traits.characterCode]) {
+    traits.characterKey = characterCodeMap[traits.characterCode].key;
+    traits.characterName = characterCodeMap[traits.characterCode].name;
+  }
+
+  entry._traits = traits;
+  return traits;
+}
+
+function entrySearchText(entry) {
+  if (!entry._searchText) {
+    const parts = [
+      entry.label || "",
+      entry.realName || "",
+      entry.type || "",
+      Array.isArray(entry.contentTypes) ? entry.contentTypes.join(" ") : "",
+      Array.isArray(entry.categories) ? entry.categories.join(" ") : "",
+    ];
+    const traits = entryTraits(entry);
+    if (traits.prefix) {
+      parts.push(traits.prefix);
+    }
+    if (traits.seriesCode) {
+      parts.push(traits.seriesCode);
+    }
+    if (traits.characterCode) {
+      parts.push(traits.characterCode);
+    }
+    if (traits.characterKey) {
+      parts.push(traits.characterKey);
+    }
+    if (traits.characterName) {
+      parts.push(traits.characterName);
+    }
+    if (traits.variantCode) {
+      parts.push(`variant${traits.variantCode}`);
+      parts.push(traits.variantCode);
+    }
+    if (traits.modelLabel) {
+      parts.push(traits.modelLabel);
+    }
+    entry._searchText = parts.filter(Boolean).join(" ");
+  }
+  return entry._searchText;
+}
+
 function entryTokens(entry) {
   if (!entry._tokens) {
-    const label = `${entry.label} ${entry.realName || ""}`.trim();
-    entry._tokens = FilterUtils ? FilterUtils.tokenizeLabel(label) : [];
+    const text = entrySearchText(entry);
+    entry._tokens = FilterUtils ? FilterUtils.tokenizeLabel(text) : [];
   }
   return entry._tokens;
+}
+
+function normalizeChipMatchMode(mode) {
+  return mode === "all" ? "all" : "any";
+}
+
+function chipMatchModeIsAny() {
+  return normalizeChipMatchMode(state.chipMatchMode) !== "all";
+}
+
+function groupMatch(entry, filters) {
+  if (!Array.isArray(filters) || !filters.length || !window.FilterUtils) {
+    return true;
+  }
+  const label = entrySearchText(entry);
+  const tokens = entryTokens(entry);
+  if (chipMatchModeIsAny()) {
+    return filters.some((filter) => FilterUtils.matchLabel(label, filter, tokens));
+  }
+  return filters.every((filter) => FilterUtils.matchLabel(label, filter, tokens));
+}
+
+async function buildConfigFilterCounts(entries) {
+  const next = {
+    media: new Map(),
+    character: new Map(),
+    tags: new Map(),
+  };
+  if (!window.FilterConfig || !window.FilterUtils) {
+    filterCountCache = next;
+    return;
+  }
+  const groups = [
+    { key: "media", filters: FilterConfig.media || [] },
+    { key: "character", filters: FilterConfig.characters || [] },
+    { key: "tags", filters: FilterConfig.tags || [] },
+  ];
+  groups.forEach((group) => {
+    group.filters.forEach((filter) => {
+      if (!filter?.key) {
+        return;
+      }
+      next[group.key].set(filter.key, 0);
+    });
+  });
+
+  const source = Array.isArray(entries) ? entries : [];
+  for (let entryIndex = 0; entryIndex < source.length; entryIndex += 1) {
+    const entry = source[entryIndex];
+    const label = entrySearchText(entry);
+    const tokens = entryTokens(entry);
+    groups.forEach((group) => {
+      group.filters.forEach((filter) => {
+        if (!filter?.key) {
+          return;
+        }
+        if (FilterUtils.matchLabel(label, filter, tokens)) {
+          next[group.key].set(
+            filter.key,
+            Number(next[group.key].get(filter.key) || 0) + 1
+          );
+        }
+      });
+    });
+    if ((entryIndex + 1) % 450 === 0) {
+      await yieldToUI();
+    }
+  }
+  filterCountCache = next;
+}
+
+function annotateFiltersWithCounts(filters, countMap) {
+  const map = countMap instanceof Map ? countMap : new Map();
+  return (Array.isArray(filters) ? filters : []).map((filter) => ({
+    ...filter,
+    count: map.has(filter.key) ? map.get(filter.key) : undefined,
+  }));
+}
+
+function bumpCounter(counter, key) {
+  if (!key) {
+    return;
+  }
+  counter.set(key, (counter.get(key) || 0) + 1);
+}
+
+function formatNamingPrefixLabel(prefix) {
+  if (namingPrefixHints[prefix]) {
+    return namingPrefixHints[prefix];
+  }
+  return prefix;
+}
+
+function formatSeriesLabel(code) {
+  const hint = costumeSeriesHints[code];
+  if (hint) {
+    return `${code} · ${hint}`;
+  }
+  return code;
+}
+
+function formatCodeCharacterLabel(code) {
+  const mapped = characterCodeMap[code];
+  if (mapped) {
+    return `${mapped.name} (${code})`;
+  }
+  return code;
+}
+
+function formatVariantLabel(code) {
+  if (!code) {
+    return "";
+  }
+  if (code === "01") {
+    return "01 · Default";
+  }
+  return `${code} · Variant`;
+}
+
+function normalizeYamlValue(raw) {
+  const value = String(raw || "").trim();
+  if (
+    (value.startsWith("\"") && value.endsWith("\"")) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function parseSimpleYamlList(text) {
+  const items = [];
+  let current = null;
+  String(text || "")
+    .split(/\r?\n/)
+    .forEach((line) => {
+      const startMatch = line.match(/^\s*-\s+([A-Za-z0-9_]+):\s*(.*)\s*$/);
+      if (startMatch) {
+        if (current) {
+          items.push(current);
+        }
+        current = {};
+        current[startMatch[1]] = normalizeYamlValue(startMatch[2]);
+        return;
+      }
+      const fieldMatch = line.match(/^\s+([A-Za-z0-9_]+):\s*(.*)\s*$/);
+      if (!fieldMatch || !current) {
+        return;
+      }
+      current[fieldMatch[1]] = normalizeYamlValue(fieldMatch[2]);
+    });
+  if (current) {
+    items.push(current);
+  }
+  return items;
+}
+
+function toCharacterKey(rawName, fallbackId) {
+  const normalized = String(rawName || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (normalized) {
+    return normalized;
+  }
+  return fallbackId ? `char${fallbackId}` : "";
+}
+
+function loadCostumeSeriesHints() {
+  if (costumeSeriesLoadPromise) {
+    return costumeSeriesLoadPromise;
+  }
+  costumeSeriesLoadPromise = Promise.all([
+    fetch("/api/masterdata/file?name=Costumes")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=CostumeModels")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=Characters")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+  ])
+    .then(([costumesText, costumeModelsText, charactersText]) => {
+      const nextSeriesHints = { ...defaultCostumeSeriesHints };
+      if (costumesText) {
+        parseSimpleYamlList(costumesText).forEach((row) => {
+          const id = String(row.Id || "").trim();
+          const label = String(row.Label || "").trim();
+          if (!id || !label) {
+            return;
+          }
+          const seriesCode = id.slice(0, 4);
+          if (seriesCode) {
+            nextSeriesHints[seriesCode] = label;
+          }
+        });
+      }
+      costumeSeriesHints = nextSeriesHints;
+
+      if (charactersText) {
+        parseSimpleYamlList(charactersText).forEach((row) => {
+          const id = String(row.Id || "").trim();
+          if (!id) {
+            return;
+          }
+          const latinFirst = String(row.LatinAlphabetNameFirst || "").trim();
+          const latinLast = String(row.LatinAlphabetNameLast || "").trim();
+          const jpFirst = String(row.NameFirst || "").trim();
+          const fallbackName = [latinFirst, latinLast].filter(Boolean).join(" ");
+          const displayName = fallbackName || jpFirst || id;
+          if (!characterCodeMap[id]) {
+            characterCodeMap[id] = {
+              key: toCharacterKey(latinFirst || displayName, id),
+              name: displayName,
+            };
+            return;
+          }
+          if (displayName) {
+            characterCodeMap[id].name = displayName;
+          }
+          if (!characterCodeMap[id].key) {
+            characterCodeMap[id].key = toCharacterKey(latinFirst || displayName, id);
+          }
+        });
+      }
+
+      const nextCostumeModelHints = {};
+      if (costumeModelsText) {
+        parseSimpleYamlList(costumeModelsText).forEach((row) => {
+          const id = String(row.Id || "").trim();
+          if (!id) {
+            return;
+          }
+          const fullId = id.padStart(10, "0");
+          nextCostumeModelHints[fullId] = {
+            label: String(row.Label || "").trim(),
+            characterCode: String(row.CharactersId || "").trim(),
+            seriesCode: String(row.CostumesId || "").trim(),
+            hairStyleId: String(row.HairStyleId || "").trim(),
+          };
+        });
+      }
+      costumeModelHints = nextCostumeModelHints;
+    })
+    .catch(() => {});
+  return costumeSeriesLoadPromise;
+}
+
+function buildDynamicFilterItems(counter, formatter, selectedKeys, options = {}) {
+  const {
+    minCount = 1,
+    limit = 24,
+  } = options;
+  const selected = new Set(Array.isArray(selectedKeys) ? selectedKeys : []);
+  const sorted = Array.from(counter.entries()).sort((a, b) => {
+    if (b[1] !== a[1]) {
+      return b[1] - a[1];
+    }
+    return a[0].localeCompare(b[0]);
+  });
+  const items = [];
+  sorted.forEach(([key, count]) => {
+    if (count < minCount && !selected.has(key)) {
+      return;
+    }
+    if (items.length >= limit && !selected.has(key)) {
+      return;
+    }
+    items.push({
+      key,
+      label: formatter(key),
+      count,
+    });
+  });
+  selected.forEach((key) => {
+    if (items.some((item) => item.key === key)) {
+      return;
+    }
+    const count = counter.get(key) || 0;
+    items.push({
+      key,
+      label: formatter(key),
+      count,
+    });
+  });
+  return items;
+}
+
+function buildNamingFilters(entries) {
+  const prefixCounter = new Map();
+  const seriesCounter = new Map();
+  const codeCharacterCounter = new Map();
+  const variantCounter = new Map();
+
+  entries.forEach((entry) => {
+    const traits = entryTraits(entry);
+    bumpCounter(prefixCounter, traits.prefix);
+    bumpCounter(seriesCounter, traits.seriesCode);
+    bumpCounter(codeCharacterCounter, traits.characterCode);
+    bumpCounter(variantCounter, traits.variantCode);
+  });
+
+  namingFilterConfig = {
+    prefixes: buildDynamicFilterItems(
+      prefixCounter,
+      formatNamingPrefixLabel,
+      state.namingPrefixes,
+      { minCount: 2, limit: 28 }
+    ),
+    series: buildDynamicFilterItems(
+      seriesCounter,
+      formatSeriesLabel,
+      state.namingSeries,
+      { minCount: 1, limit: 80 }
+    ),
+    codeCharacters: buildDynamicFilterItems(
+      codeCharacterCounter,
+      formatCodeCharacterLabel,
+      state.namingCodeCharacters,
+      { minCount: 1, limit: 24 }
+    ),
+    variants: buildDynamicFilterItems(
+      variantCounter,
+      formatVariantLabel,
+      state.namingVariants,
+      { minCount: 1, limit: 24 }
+    ),
+  };
+}
+
+function entryNamingSummary(entry) {
+  const traits = entryTraits(entry);
+  const parts = [];
+  if (traits.seriesCode) {
+    parts.push(formatSeriesLabel(traits.seriesCode));
+  } else if (traits.prefix) {
+    parts.push(formatNamingPrefixLabel(traits.prefix));
+  }
+  if (traits.modelLabel) {
+    parts.push(traits.modelLabel);
+  }
+  if (traits.characterCode) {
+    parts.push(formatCodeCharacterLabel(traits.characterCode));
+  }
+  if (traits.variantCode) {
+    parts.push(formatVariantLabel(traits.variantCode));
+  }
+  return parts.join(" • ");
 }
 
 function sortEntries() {
@@ -482,6 +1070,10 @@ function renderResults() {
     }
     const viewLink = I18n.withLang(`/view?${viewParams.toString()}`);
     const extraMetaParts = [];
+    const namingSummary = entryNamingSummary(entry);
+    if (namingSummary) {
+      extraMetaParts.push(namingSummary);
+    }
     if (entry.realName) {
       extraMetaParts.push(entry.realName);
     }
@@ -514,10 +1106,19 @@ function renderResults() {
     container.appendChild(card);
   });
 
-  document.getElementById("searchSummary").textContent = I18n.t(
-    "search.entries",
-    { count: searchEntries.length }
-  );
+  const summaryNode = document.getElementById("searchSummary");
+  if (summaryNode) {
+    if (allEntries.length > 0 && searchEntries.length !== allEntries.length) {
+      summaryNode.textContent = I18n.t("search.entriesFiltered", {
+        count: App.formatNumber(searchEntries.length),
+        total: App.formatNumber(allEntries.length),
+      });
+    } else {
+      summaryNode.textContent = I18n.t("search.entries", {
+        count: App.formatNumber(searchEntries.length),
+      });
+    }
+  }
   renderDiffSummary(searchEntries);
   renderPagination(totalPages);
   refreshVisibleEntryDiffs(pageEntries);
@@ -577,13 +1178,7 @@ async function applyFilters() {
         .map((key) => FilterConfig.media.find((item) => item.key === key))
         .filter(Boolean);
       if (mediaFilters.length > 0) {
-        filtered = filtered.filter((entry) => {
-          const label = `${entry.label} ${entry.realName || ""}`.trim();
-          const tokens = entryTokens(entry);
-          return mediaFilters.every((filter) =>
-            FilterUtils.matchLabel(label, filter, tokens)
-          );
-        });
+        filtered = filtered.filter((entry) => groupMatch(entry, mediaFilters));
       }
     }
 
@@ -592,13 +1187,7 @@ async function applyFilters() {
         .map((key) => FilterConfig.characters.find((item) => item.key === key))
         .filter(Boolean);
       if (charFilters.length > 0) {
-        filtered = filtered.filter((entry) => {
-          const label = `${entry.label} ${entry.realName || ""}`.trim();
-          const tokens = entryTokens(entry);
-          return charFilters.every((filter) =>
-            FilterUtils.matchLabel(label, filter, tokens)
-          );
-        });
+        filtered = filtered.filter((entry) => groupMatch(entry, charFilters));
       }
     }
 
@@ -607,15 +1196,37 @@ async function applyFilters() {
         .map((key) => FilterConfig.tags.find((item) => item.key === key))
         .filter(Boolean);
       if (tagFilters.length > 0) {
-        filtered = filtered.filter((entry) => {
-          const label = `${entry.label} ${entry.realName || ""}`.trim();
-          const tokens = entryTokens(entry);
-          return tagFilters.every((filter) =>
-            FilterUtils.matchLabel(label, filter, tokens)
-          );
-        });
+        filtered = filtered.filter((entry) => groupMatch(entry, tagFilters));
       }
     }
+  }
+
+  if (state.namingPrefixes.length > 0) {
+    filtered = filtered.filter((entry) => {
+      const traits = entryTraits(entry);
+      return state.namingPrefixes.includes(traits.prefix);
+    });
+  }
+
+  if (state.namingSeries.length > 0) {
+    filtered = filtered.filter((entry) => {
+      const traits = entryTraits(entry);
+      return state.namingSeries.includes(traits.seriesCode);
+    });
+  }
+
+  if (state.namingCodeCharacters.length > 0) {
+    filtered = filtered.filter((entry) => {
+      const traits = entryTraits(entry);
+      return state.namingCodeCharacters.includes(traits.characterCode);
+    });
+  }
+
+  if (state.namingVariants.length > 0) {
+    filtered = filtered.filter((entry) => {
+      const traits = entryTraits(entry);
+      return state.namingVariants.includes(traits.variantCode);
+    });
   }
 
   if (diffEnabled() && state.diffStatus !== "all") {
@@ -756,6 +1367,21 @@ function updateUrl() {
   if (state.tags.length > 0) {
     params.set("tags", state.tags.join(","));
   }
+  if (state.namingPrefixes.length > 0) {
+    params.set("nPrefix", state.namingPrefixes.join(","));
+  }
+  if (state.namingSeries.length > 0) {
+    params.set("nSeries", state.namingSeries.join(","));
+  }
+  if (state.namingCodeCharacters.length > 0) {
+    params.set("nChar", state.namingCodeCharacters.join(","));
+  }
+  if (state.namingVariants.length > 0) {
+    params.set("nVar", state.namingVariants.join(","));
+  }
+  if (normalizeChipMatchMode(state.chipMatchMode) !== "any") {
+    params.set("chipMode", normalizeChipMatchMode(state.chipMatchMode));
+  }
   if (state.type) {
     params.set("type", state.type);
   }
@@ -791,15 +1417,25 @@ async function loadSearch() {
   if (state.field && state.field !== "all") {
     params.set("field", state.field);
   }
+  params.set("withMeta", "1");
   if (needsModifiedTime()) {
     params.set("withModTime", "1");
   }
   const data = await App.apiGet(`/api/search?${params.toString()}`);
   allEntries = data;
+  await loadCostumeSeriesHints();
+  allEntries.forEach((entry) => {
+    entry._tokens = null;
+    entry._searchText = "";
+    entry._traits = null;
+  });
+  buildNamingFilters(allEntries);
   if (window.FilterUtils && FilterUtils.loadConfig) {
     await FilterUtils.loadConfig();
   }
+  await buildConfigFilterCounts(allEntries);
   buildTypeFilter();
+  renderFilterChips();
   await applyFilters();
 }
 
@@ -1001,6 +1637,42 @@ document.addEventListener("DOMContentLoaded", () => {
 function setupSearchControls() {
   const diffStatusSelect = document.getElementById("diffStatus");
   const diffApplyButton = document.getElementById("diffApply");
+  const chipMatchSelect = document.getElementById("chipMatchMode");
+  const clearFiltersButton = document.getElementById("searchClearFilters");
+  if (chipMatchSelect) {
+    chipMatchSelect.value = normalizeChipMatchMode(state.chipMatchMode);
+    chipMatchSelect.addEventListener("change", () => {
+      state.chipMatchMode = normalizeChipMatchMode(chipMatchSelect.value);
+      currentPage = 1;
+      updateUrl();
+      applyFilters().catch(() => {});
+      renderFilterChips();
+    });
+  }
+  if (clearFiltersButton) {
+    clearFiltersButton.addEventListener("click", () => {
+      state.media = [];
+      state.character = [];
+      state.tags = [];
+      state.namingPrefixes = [];
+      state.namingSeries = [];
+      state.namingCodeCharacters = [];
+      state.namingVariants = [];
+      state.type = "";
+      state.chipMatchMode = "any";
+      const typeFilter = document.getElementById("typeFilter");
+      if (typeFilter) {
+        typeFilter.value = "";
+      }
+      if (chipMatchSelect) {
+        chipMatchSelect.value = "any";
+      }
+      currentPage = 1;
+      updateUrl();
+      applyFilters().catch(() => {});
+      renderFilterChips();
+    });
+  }
   if (diffStatusSelect) {
     diffStatusSelect.value = state.diffStatus || "all";
     diffStatusSelect.addEventListener("change", () => {
@@ -1020,6 +1692,7 @@ function setupSearchControls() {
   document.getElementById("searchApply").addEventListener("click", () => {
     state.query = document.getElementById("searchQuery").value.trim();
     state.field = document.getElementById("searchField").value;
+    currentPage = 1;
     updateUrl();
     loadSearch();
   });
@@ -1030,6 +1703,11 @@ function setupSearchControls() {
       media: [],
       character: [],
       tags: [],
+      namingPrefixes: [],
+      namingSeries: [],
+      namingCodeCharacters: [],
+      namingVariants: [],
+      chipMatchMode: "any",
       type: "",
       view: state.view,
       diffFrom: state.diffFrom,
@@ -1042,6 +1720,10 @@ function setupSearchControls() {
     if (diffStatusSelect) {
       diffStatusSelect.value = "all";
     }
+    if (chipMatchSelect) {
+      chipMatchSelect.value = "any";
+    }
+    currentPage = 1;
     syncDiffControls();
     updateUrl();
     loadSearch();
@@ -1082,6 +1764,11 @@ function hydrateStateFromUrl() {
   state.media = parseParamList(params.get("media"));
   state.character = parseParamList(params.get("character"));
   state.tags = parseParamList(params.get("tags"));
+  state.namingPrefixes = parseParamList(params.get("nPrefix"));
+  state.namingSeries = parseParamList(params.get("nSeries"));
+  state.namingCodeCharacters = parseParamList(params.get("nChar"));
+  state.namingVariants = parseParamList(params.get("nVar"));
+  state.chipMatchMode = normalizeChipMatchMode(params.get("chipMode") || "any");
   state.type = params.get("type") || "";
   state.view = params.get("view") || "grid";
   state.diffFrom = params.get("diffFrom") || "";
@@ -1109,24 +1796,188 @@ function parseParamList(value) {
 function renderFilterChips() {
   renderFilterGroup(
     document.getElementById("mediaFilters"),
-    window.FilterConfig ? FilterConfig.media : [],
+    annotateFiltersWithCounts(
+      window.FilterConfig ? FilterConfig.media : [],
+      filterCountCache.media
+    ),
     state.media,
     (key) => toggleFilter("media", key)
   );
 
   renderFilterGroup(
     document.getElementById("characterFilters"),
-    window.FilterConfig ? FilterConfig.characters : [],
+    annotateFiltersWithCounts(
+      window.FilterConfig ? FilterConfig.characters : [],
+      filterCountCache.character
+    ),
     state.character,
     (key) => toggleFilter("character", key)
   );
 
   renderFilterGroup(
     document.getElementById("tagFilters"),
-    window.FilterConfig && FilterConfig.tags ? FilterConfig.tags : [],
+    annotateFiltersWithCounts(
+      window.FilterConfig && FilterConfig.tags ? FilterConfig.tags : [],
+      filterCountCache.tags
+    ),
     state.tags,
     (key) => toggleFilter("tags", key)
   );
+
+  renderFilterGroup(
+    document.getElementById("namingPrefixFilters"),
+    namingFilterConfig.prefixes || [],
+    state.namingPrefixes,
+    (key) => toggleFilter("namingPrefixes", key)
+  );
+
+  renderFilterGroup(
+    document.getElementById("namingSeriesFilters"),
+    namingFilterConfig.series || [],
+    state.namingSeries,
+    (key) => toggleFilter("namingSeries", key)
+  );
+
+  renderFilterGroup(
+    document.getElementById("namingCharacterFilters"),
+    namingFilterConfig.codeCharacters || [],
+    state.namingCodeCharacters,
+    (key) => toggleFilter("namingCodeCharacters", key)
+  );
+
+  renderFilterGroup(
+    document.getElementById("namingVariantFilters"),
+    namingFilterConfig.variants || [],
+    state.namingVariants,
+    (key) => toggleFilter("namingVariants", key)
+  );
+
+  renderFilterStrategySummary();
+  renderActiveFilterBar();
+}
+
+function filterLabelFromGroup(group, key) {
+  if (!key) {
+    return "";
+  }
+  const byConfig = (items) => {
+    const target = (items || []).find((item) => item.key === key);
+    if (!target) {
+      return "";
+    }
+    return target.labelKey ? I18n.t(target.labelKey) : target.label || key;
+  };
+  if (group === "media") {
+    return byConfig(window.FilterConfig ? FilterConfig.media : []);
+  }
+  if (group === "character") {
+    return byConfig(window.FilterConfig ? FilterConfig.characters : []);
+  }
+  if (group === "tags") {
+    return byConfig(window.FilterConfig ? FilterConfig.tags : []);
+  }
+  if (group === "namingPrefixes") {
+    return byConfig(namingFilterConfig.prefixes || []) || formatNamingPrefixLabel(key);
+  }
+  if (group === "namingSeries") {
+    return byConfig(namingFilterConfig.series || []) || formatSeriesLabel(key);
+  }
+  if (group === "namingCodeCharacters") {
+    return (
+      byConfig(namingFilterConfig.codeCharacters || []) || formatCodeCharacterLabel(key)
+    );
+  }
+  if (group === "namingVariants") {
+    return byConfig(namingFilterConfig.variants || []) || formatVariantLabel(key);
+  }
+  return key;
+}
+
+function collectActiveFilters() {
+  const groups = [
+    "media",
+    "character",
+    "tags",
+    "namingPrefixes",
+    "namingSeries",
+    "namingCodeCharacters",
+    "namingVariants",
+  ];
+  const active = [];
+  groups.forEach((group) => {
+    (state[group] || []).forEach((key) => {
+      active.push({
+        group,
+        key,
+        label: filterLabelFromGroup(group, key),
+      });
+    });
+  });
+  if (state.type) {
+    active.push({
+      group: "type",
+      key: state.type,
+      label: `${I18n.t("search.typeLabel")}: ${state.type}`,
+    });
+  }
+  return active;
+}
+
+function renderFilterStrategySummary() {
+  const node = document.getElementById("activeFilterSummary");
+  if (!node) {
+    return;
+  }
+  const count = collectActiveFilters().length;
+  node.textContent = I18n.t("search.activeFilters", {
+    count: App.formatNumber(count),
+    mode:
+      normalizeChipMatchMode(state.chipMatchMode) === "all"
+        ? I18n.t("search.matchModeAllShort")
+        : I18n.t("search.matchModeAnyShort"),
+  });
+}
+
+function renderActiveFilterBar() {
+  const container = document.getElementById("activeFilterBar");
+  if (!container) {
+    return;
+  }
+  const items = collectActiveFilters();
+  if (!items.length) {
+    container.innerHTML = "";
+    container.classList.add("d-none");
+    return;
+  }
+  container.classList.remove("d-none");
+  container.innerHTML = "";
+  items.forEach((item) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "search-active-filter-pill";
+    btn.textContent = `${item.label} ×`;
+    btn.title = I18n.t("search.activeFilterRemove");
+    btn.addEventListener("click", () => {
+      if (item.group === "type") {
+        state.type = "";
+        const select = document.getElementById("typeFilter");
+        if (select) {
+          select.value = "";
+        }
+      } else {
+        const list = state[item.group] || [];
+        const index = list.indexOf(item.key);
+        if (index >= 0) {
+          list.splice(index, 1);
+        }
+      }
+      currentPage = 1;
+      updateUrl();
+      applyFilters().catch(() => {});
+      renderFilterChips();
+    });
+    container.appendChild(btn);
+  });
 }
 
 function toggleFilter(group, key) {
@@ -1140,6 +1991,7 @@ function toggleFilter(group, key) {
   } else {
     list.push(key);
   }
+  currentPage = 1;
   updateUrl();
   applyFilters().catch(() => {});
   renderFilterChips();
@@ -1155,9 +2007,14 @@ function renderFilterGroup(container, filters, activeKeys, onSelect) {
     button.type = "button";
     const isActive = Array.isArray(activeKeys) && activeKeys.includes(filter.key);
     button.className = `filter-chip${isActive ? " active" : ""}`;
-    button.textContent = filter.labelKey
+    const text = filter.labelKey
       ? I18n.t(filter.labelKey)
       : filter.label;
+    if (typeof filter.count === "number" && filter.count >= 0) {
+      button.textContent = `${text} (${App.formatNumber(filter.count)})`;
+    } else {
+      button.textContent = text;
+    }
     button.addEventListener("click", () => onSelect(filter.key));
     container.appendChild(button);
   });
@@ -1183,8 +2040,10 @@ function buildTypeFilter() {
   }
   select.onchange = () => {
     state.type = select.value;
+    currentPage = 1;
     updateUrl();
     applyFilters().catch(() => {});
+    renderFilterChips();
   };
 }
 
