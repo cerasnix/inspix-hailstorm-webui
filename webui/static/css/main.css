@@ -1360,6 +1360,46 @@ body {
   line-height: 1.35;
 }
 
+.prefab-assembly-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.38rem;
+}
+
+.prefab-assembly-pose {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 168px;
+  flex: 1 1 180px;
+}
+
+.prefab-assembly-pose span {
+  font-size: 0.7rem;
+  color: var(--muted);
+  line-height: 1.2;
+}
+
+.prefab-assembly-rig {
+  font-size: 0.71rem;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.prefab-assembly-pending {
+  font-size: 0.71rem;
+  color: var(--muted);
+  line-height: 1.3;
+  border: 1px dashed rgba(33, 93, 111, 0.28);
+  border-radius: 8px;
+  background: rgba(241, 248, 252, 0.7);
+  padding: 0.26rem 0.42rem;
+}
+
+.prefab-assembly-export {
+  margin-top: -0.08rem;
+}
+
 .prefab-assembly-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(200px, 1fr);
@@ -2139,6 +2179,18 @@ body {
 
   .prefab-assembly-layout {
     grid-template-columns: 1fr;
+  }
+
+  .prefab-assembly-toolbar {
+    align-items: stretch;
+  }
+
+  .prefab-assembly-pose {
+    flex-basis: 100%;
+  }
+
+  .prefab-assembly-toolbar .btn {
+    flex: 1 1 calc(50% - 0.2rem);
   }
 
   .prefab-assembly-list {

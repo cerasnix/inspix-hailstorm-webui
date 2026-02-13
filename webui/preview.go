@@ -3,6 +3,7 @@ package webui
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -743,7 +744,7 @@ func collectPrefabItems(dir string, prefabHierarchyDir string) []PreviewItem {
 		}
 		seen[path] = struct{}{}
 		item := PreviewItem{
-			ID:          fmt.Sprintf("pf%03d", len(items)+1),
+			ID:          stablePreviewItemID(path),
 			ContentType: ctype,
 			Path:        path,
 			Kind:        kind,
@@ -765,6 +766,15 @@ func collectPrefabItems(dir string, prefabHierarchyDir string) []PreviewItem {
 		addPath(path)
 	}
 	return items
+}
+
+func stablePreviewItemID(path string) string {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	if clean == "" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(clean))
+	return fmt.Sprintf("pf%x", sum[:6])
 }
 
 func previewKindAndTypeByExt(path string) (string, string) {

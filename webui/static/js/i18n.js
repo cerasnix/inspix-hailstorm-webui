@@ -281,6 +281,43 @@ window.I18n = (() => {
       "view.prefabAssemblyFromDependency": "Dependency",
       "view.prefabAssemblyMissingDeps":
         "{{count}} dependency item(s) were not found locally.",
+      "view.prefabAssemblyPending":
+        "{{count}} dependency item(s) need preview export before full assembly.",
+      "view.prefabAssemblyPrepareButton": "Prepare missing ({{count}})",
+      "view.prefabAssemblyPreparing":
+        "Preparing {{index}}/{{total}}: {{label}}",
+      "view.prefabAssemblyPrepareDone":
+        "Missing components prepared, refreshing assembly...",
+      "view.prefabAssemblyPrepareFailed":
+        "Failed to prepare {{count}} dependency item(s).",
+      "view.prefabAssemblyPrepareNoTask":
+        "Failed to start dependency prepare task.",
+      "view.prefabPoseLabel": "Pose preset",
+      "view.prefabPoseApply": "Apply pose",
+      "view.prefabPoseReset": "Reset pose",
+      "view.prefabPoseIdle": "Idle stance",
+      "view.prefabPoseA": "A-pose",
+      "view.prefabPoseT": "T-pose",
+      "view.prefabPoseHandsUp": "Hands up",
+      "view.prefabRigDetecting": "Detecting skeleton data...",
+      "view.prefabRigNone": "No skeleton was detected in loaded components.",
+      "view.prefabRigHumanoid":
+        "{{skeletons}} skeleton(s) · {{bones}} bones · {{mapped}} mapped humanoid joints.",
+      "view.prefabRigGeneric":
+        "{{skeletons}} skeleton(s) · {{bones}} bones · {{mapped}} recognizable joints.",
+      "view.prefabRigPoseUnavailable":
+        "Current preset cannot be applied to this rig.",
+      "view.prefabAssemblyExportButton": "Export assembly GLB",
+      "view.prefabAssemblyExportIdle": "Assembly export idle",
+      "view.prefabAssemblyExportPrepare": "Preparing assembled scene",
+      "view.prefabAssemblyExportCollect": "Collecting visible components",
+      "view.prefabAssemblyExportEncode": "Encoding GLB",
+      "view.prefabAssemblyExportCache": "Saving local cache",
+      "view.prefabAssemblyExportCached": "Using local cached GLB",
+      "view.prefabAssemblyExportDone": "Assembly GLB is ready",
+      "view.prefabAssemblyExportFailed": "Assembly export failed.",
+      "view.prefabAssemblyExportNoVisible":
+        "No visible model component is enabled.",
       "view.modelReset": "Reset view",
       "view.modelContrastOff": "High contrast",
       "view.modelContrastOn": "Normal contrast",
@@ -603,6 +640,39 @@ window.I18n = (() => {
       "view.prefabAssemblyFromSelf": "本体",
       "view.prefabAssemblyFromDependency": "依赖",
       "view.prefabAssemblyMissingDeps": "有 {{count}} 个依赖项未在本地找到。",
+      "view.prefabAssemblyPending":
+        "有 {{count}} 个依赖尚未导出预览，暂无法纳入完整组合。",
+      "view.prefabAssemblyPrepareButton": "准备缺失组件（{{count}}）",
+      "view.prefabAssemblyPreparing":
+        "正在准备 {{index}}/{{total}}：{{label}}",
+      "view.prefabAssemblyPrepareDone":
+        "缺失组件已准备完成，正在刷新组合预览...",
+      "view.prefabAssemblyPrepareFailed":
+        "有 {{count}} 个依赖项准备失败。",
+      "view.prefabAssemblyPrepareNoTask":
+        "未能启动依赖准备任务。",
+      "view.prefabPoseLabel": "姿势预设",
+      "view.prefabPoseApply": "应用姿势",
+      "view.prefabPoseReset": "重置姿势",
+      "view.prefabPoseIdle": "站立待机",
+      "view.prefabPoseA": "A-Pose",
+      "view.prefabPoseT": "T-Pose",
+      "view.prefabPoseHandsUp": "举手姿势",
+      "view.prefabRigDetecting": "正在识别骨骼数据...",
+      "view.prefabRigNone": "已加载组件中未检测到骨骼。",
+      "view.prefabRigHumanoid": "{{skeletons}} 套骨架 · {{bones}} 根骨骼 · {{mapped}} 个人形映射关节。",
+      "view.prefabRigGeneric": "{{skeletons}} 套骨架 · {{bones}} 根骨骼 · {{mapped}} 个可识别关节。",
+      "view.prefabRigPoseUnavailable": "当前预设无法应用到该骨架。",
+      "view.prefabAssemblyExportButton": "导出组合 GLB",
+      "view.prefabAssemblyExportIdle": "组合导出空闲",
+      "view.prefabAssemblyExportPrepare": "正在准备组合场景",
+      "view.prefabAssemblyExportCollect": "正在收集可见组件",
+      "view.prefabAssemblyExportEncode": "正在编码 GLB",
+      "view.prefabAssemblyExportCache": "正在写入本地缓存",
+      "view.prefabAssemblyExportCached": "使用本地缓存 GLB",
+      "view.prefabAssemblyExportDone": "组合 GLB 已就绪",
+      "view.prefabAssemblyExportFailed": "组合导出失败。",
+      "view.prefabAssemblyExportNoVisible": "当前没有启用可见模型组件。",
       "view.modelReset": "重置视角",
       "view.modelContrastOff": "高对比",
       "view.modelContrastOn": "普通对比",
@@ -935,6 +1005,43 @@ window.I18n = (() => {
       "view.prefabAssemblyFromDependency": "依存",
       "view.prefabAssemblyMissingDeps":
         "ローカルに見つからない依存項目が {{count}} 件あります。",
+      "view.prefabAssemblyPending":
+        "完全な組み合わせには {{count}} 件の依存プレビュー書き出しが必要です。",
+      "view.prefabAssemblyPrepareButton": "不足分を準備 ({{count}})",
+      "view.prefabAssemblyPreparing":
+        "{{index}}/{{total}} を準備中: {{label}}",
+      "view.prefabAssemblyPrepareDone":
+        "不足コンポーネントの準備が完了しました。再読み込みします...",
+      "view.prefabAssemblyPrepareFailed":
+        "{{count}} 件の依存準備に失敗しました。",
+      "view.prefabAssemblyPrepareNoTask":
+        "依存準備タスクを開始できませんでした。",
+      "view.prefabPoseLabel": "ポーズプリセット",
+      "view.prefabPoseApply": "ポーズ適用",
+      "view.prefabPoseReset": "ポーズをリセット",
+      "view.prefabPoseIdle": "待機ポーズ",
+      "view.prefabPoseA": "Aポーズ",
+      "view.prefabPoseT": "Tポーズ",
+      "view.prefabPoseHandsUp": "両手を上げる",
+      "view.prefabRigDetecting": "スケルトンを解析中...",
+      "view.prefabRigNone": "読み込まれたコンポーネントにスケルトンがありません。",
+      "view.prefabRigHumanoid":
+        "{{skeletons}} 体のスケルトン · {{bones}} 本のボーン · 人型マップ {{mapped}} 関節。",
+      "view.prefabRigGeneric":
+        "{{skeletons}} 体のスケルトン · {{bones}} 本のボーン · 認識関節 {{mapped}}。",
+      "view.prefabRigPoseUnavailable":
+        "このスケルトンには現在のプリセットを適用できません。",
+      "view.prefabAssemblyExportButton": "組み合わせ GLB を書き出し",
+      "view.prefabAssemblyExportIdle": "組み合わせ書き出し待機中",
+      "view.prefabAssemblyExportPrepare": "組み合わせシーンを準備中",
+      "view.prefabAssemblyExportCollect": "可視コンポーネントを収集中",
+      "view.prefabAssemblyExportEncode": "GLB をエンコード中",
+      "view.prefabAssemblyExportCache": "ローカルキャッシュを保存中",
+      "view.prefabAssemblyExportCached": "ローカルキャッシュ済み GLB を使用",
+      "view.prefabAssemblyExportDone": "組み合わせ GLB の準備完了",
+      "view.prefabAssemblyExportFailed": "組み合わせ書き出しに失敗しました。",
+      "view.prefabAssemblyExportNoVisible":
+        "表示中のモデルコンポーネントがありません。",
       "view.modelReset": "視点リセット",
       "view.modelContrastOff": "高コントラスト",
       "view.modelContrastOn": "通常コントラスト",

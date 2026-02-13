@@ -810,6 +810,7 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 	sort.Strings(uniqueDeps)
 
 	missing := make([]string, 0, 8)
+	pending := make([]map[string]any, 0, 8)
 	for _, depLabel := range uniqueDeps {
 		depEntry, ok := entryMap[depLabel]
 		if !ok {
@@ -827,7 +828,19 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 			depEntry.ResourceType,
 			depPlainPath,
 		)
+		before := len(components)
 		appendFromPreview(depEntry.StrLabelCrc, "dependency", depPreview)
+		if len(components) > before {
+			continue
+		}
+		if !depPreview.Available && shouldPreparePrefabAssemblyDependency(depEntry) {
+			pending = append(pending, map[string]any{
+				"label":        depEntry.StrLabelCrc,
+				"type":         depEntry.StrTypeCrc,
+				"resourceType": depEntry.ResourceType,
+				"size":         depEntry.Size,
+			})
+		}
 	}
 
 	sort.Slice(components, func(i, j int) bool {
@@ -852,11 +865,21 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 	}
 
 	return map[string]any{
-		"available":           len(componentPayload) > 0,
+		"available":           len(componentPayload) > 0 || len(pending) > 0,
 		"componentCount":      len(componentPayload),
 		"components":          componentPayload,
 		"missingDependencies": missing,
+		"pendingDependencies": pending,
 	}
+}
+
+func shouldPreparePrefabAssemblyDependency(entry manifest.Entry) bool {
+	t := strings.ToLower(strings.TrimSpace(entry.StrTypeCrc))
+	if t == "fbx" || t == "prefab" {
+		return true
+	}
+	label := strings.ToLower(strings.TrimSpace(entry.StrLabelCrc))
+	return strings.HasSuffix(label, ".fbx") || strings.HasSuffix(label, ".prefab")
 }
 
 func filterEntries(entries []manifest.Entry, query string, field string) []manifest.Entry {

@@ -22,6 +22,36 @@ let previewRenderDisposers = [];
 let previewExportRunToken = 0;
 let previewAudioContext = null;
 let threeModulesPromise = null;
+const assemblyExportMemoryCache = new Map();
+const assemblyExportPersistentCacheName = "inspix-hailstorm-assembly-glb-v1";
+const assemblyPosePresetOptions = [
+  { id: "reset", labelKey: "view.prefabPoseReset" },
+  { id: "idle", labelKey: "view.prefabPoseIdle" },
+  { id: "apose", labelKey: "view.prefabPoseA" },
+  { id: "tpose", labelKey: "view.prefabPoseT" },
+  { id: "handsup", labelKey: "view.prefabPoseHandsUp" },
+];
+const rigBoneAliasMap = {
+  hips: ["hips", "pelvis", "hip"],
+  spine: ["spine", "spine1", "spine01", "spine2", "spine02"],
+  chest: ["chest", "upperchest", "thorax", "torso"],
+  neck: ["neck"],
+  head: ["head"],
+  leftShoulder: ["leftshoulder", "lshoulder", "leftclavicle", "lclavicle", "claviclel"],
+  rightShoulder: ["rightshoulder", "rshoulder", "rightclavicle", "rclavicle", "clavicler"],
+  leftUpperArm: ["leftupperarm", "lupperarm", "leftarm", "larm"],
+  rightUpperArm: ["rightupperarm", "rupperarm", "rightarm", "rarm"],
+  leftLowerArm: ["leftlowerarm", "lforearm", "leftforearm", "lowlarm"],
+  rightLowerArm: ["rightlowerarm", "rforearm", "rightforearm", "rowlarm"],
+  leftHand: ["lefthand", "lhand", "wristl", "leftwrist"],
+  rightHand: ["righthand", "rhand", "wristr", "rightwrist"],
+  leftUpperLeg: ["leftupperleg", "lthigh", "leftthigh", "uplegl"],
+  rightUpperLeg: ["rightupperleg", "rthigh", "rightthigh", "uplegr"],
+  leftLowerLeg: ["leftlowerleg", "lcalf", "leftcalf", "legl"],
+  rightLowerLeg: ["rightlowerleg", "rcalf", "rightcalf", "legr"],
+  leftFoot: ["leftfoot", "lfoot", "anklel", "leftankle"],
+  rightFoot: ["rightfoot", "rfoot", "ankler", "rightankle"],
+};
 
 function addPreviewDisposer(disposer) {
   if (typeof disposer === "function") {
@@ -131,6 +161,130 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function sanitizeExportFileName(name) {
+  const text = String(name || "").trim();
+  if (!text) {
+    return "assembly";
+  }
+  return text.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "assembly";
+}
+
+function triggerBlobDownload(blob, fileName) {
+  if (!blob) {
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName || "assembly.glb";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1200);
+}
+
+function rememberAssemblyExportInMemory(key, value) {
+  if (!key || !value || !value.blob) {
+    return;
+  }
+  assemblyExportMemoryCache.set(key, {
+    blob: value.blob,
+    filename: value.filename || "",
+    ts: Date.now(),
+  });
+  if (assemblyExportMemoryCache.size <= 8) {
+    return;
+  }
+  const oldest = [...assemblyExportMemoryCache.entries()].sort(
+    (left, right) => Number(left[1]?.ts || 0) - Number(right[1]?.ts || 0)
+  )[0];
+  if (oldest && oldest[0]) {
+    assemblyExportMemoryCache.delete(oldest[0]);
+  }
+}
+
+async function hashText(text) {
+  const input = String(text || "");
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(input);
+  if (window.crypto && window.crypto.subtle) {
+    const digest = await window.crypto.subtle.digest("SHA-1", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((part) => part.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < bytes.length; index += 1) {
+    hash ^= bytes[index];
+    hash +=
+      (hash << 1) +
+      (hash << 4) +
+      (hash << 7) +
+      (hash << 8) +
+      (hash << 24);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+async function readAssemblyExportPersistentCache(key) {
+  if (!key || typeof caches === "undefined") {
+    return null;
+  }
+  try {
+    const cache = await caches.open(assemblyExportPersistentCacheName);
+    const response = await cache.match(`/assembly-export/${encodeURIComponent(key)}`);
+    if (!response) {
+      return null;
+    }
+    return {
+      blob: await response.blob(),
+      filename: response.headers.get("x-file-name") || "",
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+async function writeAssemblyExportPersistentCache(key, blob, fileName) {
+  if (!key || !blob || typeof caches === "undefined") {
+    return;
+  }
+  try {
+    const cache = await caches.open(assemblyExportPersistentCacheName);
+    await cache.put(
+      `/assembly-export/${encodeURIComponent(key)}`,
+      new Response(blob, {
+        headers: {
+          "content-type": "model/gltf-binary",
+          "x-file-name": fileName || "",
+        },
+      })
+    );
+  } catch (err) {
+    // Ignore cache write failures; export should still succeed.
+  }
+}
+
+function normalizedRigName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function findRigBoneKey(name) {
+  const normalized = normalizedRigName(name);
+  if (!normalized) {
+    return "";
+  }
+  const keys = Object.keys(rigBoneAliasMap);
+  for (const key of keys) {
+    const aliases = rigBoneAliasMap[key] || [];
+    if (aliases.some((alias) => normalized.includes(alias))) {
+      return key;
+    }
+  }
+  return "";
+}
+
 async function pollPreviewExportTask(taskId, token) {
   const started = Date.now();
   while (previewExportRunToken === token) {
@@ -164,6 +318,31 @@ async function pollPreviewExportTask(taskId, token) {
     await wait(650);
   }
   throw new Error(I18n.t("view.exportCanceled"));
+}
+
+async function pollPreviewExportTaskSnapshot(taskId, onUpdate) {
+  const started = Date.now();
+  while (true) {
+    const payload = await App.apiGet(
+      `/api/entry/preview/export/status?id=${encodeURIComponent(taskId)}`
+    );
+    const task = payload.task || payload || {};
+    const status = String(task.status || "running").toLowerCase();
+    if (typeof onUpdate === "function") {
+      onUpdate(task);
+    }
+    if (status === "success") {
+      return task;
+    }
+    if (status === "error") {
+      const errorText = String(task.error || "").trim();
+      throw new Error(errorText || I18n.t("view.exportFailed"));
+    }
+    if (Date.now() - started > 20 * 60 * 1000) {
+      throw new Error(I18n.t("view.exportTimeout"));
+    }
+    await wait(650);
+  }
 }
 
 function renderPills(container, items) {
@@ -632,29 +811,145 @@ function renderAudioPreview(container, preview, label) {
   container.appendChild(grid);
 }
 
+function assemblyExportProgressText(phase) {
+  switch (String(phase || "").trim().toLowerCase()) {
+    case "prepare":
+      return I18n.t("view.prefabAssemblyExportPrepare");
+    case "collect":
+      return I18n.t("view.prefabAssemblyExportCollect");
+    case "export":
+      return I18n.t("view.prefabAssemblyExportEncode");
+    case "cache":
+      return I18n.t("view.prefabAssemblyExportCache");
+    case "cached":
+      return I18n.t("view.prefabAssemblyExportCached");
+    case "done":
+      return I18n.t("view.prefabAssemblyExportDone");
+    default:
+      return I18n.t("view.prefabAssemblyExportIdle");
+  }
+}
+
+function collectAssemblyRigInfo(root) {
+  const skeletons = [];
+  const seen = new Set();
+  root.traverse((obj) => {
+    if (!obj || !obj.isSkinnedMesh || !obj.skeleton || !Array.isArray(obj.skeleton.bones)) {
+      return;
+    }
+    const id = String(obj.skeleton.uuid || "");
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    skeletons.push(obj.skeleton);
+  });
+
+  const profiles = skeletons
+    .map((skeleton) => {
+      const mapped = {};
+      (skeleton.bones || []).forEach((bone) => {
+        const key = findRigBoneKey(bone?.name || "");
+        if (key && !mapped[key]) {
+          mapped[key] = bone;
+        }
+      });
+      return {
+        skeleton,
+        bones: skeleton.bones || [],
+        mapped,
+        mappedCount: Object.keys(mapped).length,
+      };
+    })
+    .sort((left, right) => {
+      if (left.mappedCount !== right.mappedCount) {
+        return right.mappedCount - left.mappedCount;
+      }
+      return right.bones.length - left.bones.length;
+    });
+
+  const primary = profiles[0] || null;
+  const totalBones = profiles.reduce(
+    (sum, profile) => sum + Number(profile.bones.length || 0),
+    0
+  );
+  const mappedJointCount = primary ? Object.keys(primary.mapped).length : 0;
+  return {
+    available: profiles.length > 0,
+    profiles,
+    skeletonCount: profiles.length,
+    totalBones,
+    mappedJointCount,
+    humanoid: mappedJointCount >= 8,
+  };
+}
+
+function loadAssemblyPosePreset(presetId) {
+  switch (String(presetId || "").trim().toLowerCase()) {
+    case "tpose":
+      return {
+        leftUpperArm: [0, 0, 84],
+        rightUpperArm: [0, 0, -84],
+        leftLowerArm: [0, 0, 8],
+        rightLowerArm: [0, 0, -8],
+      };
+    case "apose":
+      return {
+        leftUpperArm: [0, 0, 48],
+        rightUpperArm: [0, 0, -48],
+        leftLowerArm: [0, 0, 8],
+        rightLowerArm: [0, 0, -8],
+      };
+    case "handsup":
+      return {
+        leftUpperArm: [-88, 4, 12],
+        rightUpperArm: [-88, -4, -12],
+        leftLowerArm: [-12, 0, 2],
+        rightLowerArm: [-12, 0, -2],
+      };
+    case "idle":
+      return {
+        spine: [5, 0, 0],
+        chest: [4, 0, 0],
+        neck: [-2, 0, 0],
+        head: [-3, 0, 0],
+        leftUpperArm: [0, 0, 14],
+        rightUpperArm: [0, 0, -14],
+        leftUpperLeg: [-4, 0, 0],
+        rightUpperLeg: [-4, 0, 0],
+        leftLowerLeg: [6, 0, 0],
+        rightLowerLeg: [6, 0, 0],
+      };
+    default:
+      return {};
+  }
+}
+
 async function loadThreeModules() {
   if (!threeModulesPromise) {
     threeModulesPromise = Promise.all([
       import("https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"),
       import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/controls/OrbitControls.js"),
       import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/loaders/GLTFLoader.js"),
-    ]).then(([threeMod, controlsMod, loaderMod]) => ({
+      import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/exporters/GLTFExporter.js"),
+    ]).then(([threeMod, controlsMod, loaderMod, exporterMod]) => ({
       THREE: threeMod,
       OrbitControls: controlsMod.OrbitControls,
       GLTFLoader: loaderMod.GLTFLoader,
+      GLTFExporter: exporterMod.GLTFExporter,
     }));
   }
   return threeModulesPromise;
 }
 
-function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
+function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks = {}) {
   let disposed = false;
   let rafId = 0;
   let resizeOff = () => {};
   let cleanupRenderer = () => {};
 
   loadThreeModules()
-    .then(({ THREE, OrbitControls, GLTFLoader }) => {
+    .then(({ THREE, OrbitControls, GLTFLoader, GLTFExporter }) => {
       if (disposed) {
         return;
       }
@@ -699,6 +994,17 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
       grid.position.y = -0.001;
       scene.add(grid);
 
+      const bindPoseMap = new Map();
+      let latestRigInfo = {
+        available: false,
+        profiles: [],
+        skeletonCount: 0,
+        totalBones: 0,
+        mappedJointCount: 0,
+        humanoid: false,
+      };
+      let activePosePreset = "reset";
+
       const resize = () => {
         if (disposed) {
           return;
@@ -738,7 +1044,9 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
         const maxDim = Math.max(size.x, size.y, size.z, 0.01);
         const distance =
           (maxDim / (2 * Math.tan((camera.fov * Math.PI) / 360))) * 1.42;
-        const offset = new THREE.Vector3(0.9, 0.66, 1).normalize().multiplyScalar(distance);
+        const offset = new THREE.Vector3(0.9, 0.66, 1)
+          .normalize()
+          .multiplyScalar(distance);
         camera.position.copy(center).add(offset);
         camera.near = Math.max(distance / 280, 0.01);
         camera.far = Math.max(distance * 30, 80);
@@ -782,6 +1090,165 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
         fitCameraToVisible();
       };
 
+      const refreshRigInfo = () => {
+        root.traverse((obj) => {
+          if (!obj || !obj.isBone || bindPoseMap.has(obj.uuid)) {
+            return;
+          }
+          bindPoseMap.set(obj.uuid, {
+            bone: obj,
+            quaternion: obj.quaternion.clone(),
+            position: obj.position.clone(),
+            scale: obj.scale.clone(),
+          });
+        });
+        latestRigInfo = collectAssemblyRigInfo(root);
+        if (hooks.onRigUpdate) {
+          hooks.onRigUpdate(latestRigInfo);
+        }
+      };
+
+      const restoreBindPose = () => {
+        bindPoseMap.forEach((item) => {
+          if (!item || !item.bone) {
+            return;
+          }
+          item.bone.quaternion.copy(item.quaternion);
+          item.bone.position.copy(item.position);
+          item.bone.scale.copy(item.scale);
+        });
+        root.updateMatrixWorld(true);
+      };
+
+      const applyPosePreset = (presetId) => {
+        if (!latestRigInfo.available) {
+          activePosePreset = "reset";
+          return false;
+        }
+        const pose = loadAssemblyPosePreset(presetId);
+        restoreBindPose();
+        activePosePreset = String(presetId || "reset").toLowerCase();
+        const keys = Object.keys(pose);
+        if (!keys.length) {
+          fitCameraToVisible();
+          return true;
+        }
+
+        const rotateBone = (bone, delta) => {
+          if (!bone || !Array.isArray(delta) || delta.length !== 3) {
+            return;
+          }
+          const [xDeg, yDeg, zDeg] = delta;
+          const change = new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(
+              THREE.MathUtils.degToRad(xDeg || 0),
+              THREE.MathUtils.degToRad(yDeg || 0),
+              THREE.MathUtils.degToRad(zDeg || 0),
+              "XYZ"
+            )
+          );
+          bone.quaternion.multiply(change);
+        };
+
+        latestRigInfo.profiles.forEach((profile) => {
+          const mapped = profile?.mapped || {};
+          keys.forEach((key) => {
+            rotateBone(mapped[key], pose[key]);
+          });
+        });
+        root.updateMatrixWorld(true);
+        fitCameraToVisible();
+        return true;
+      };
+
+      const exportAsGlb = async (progress) => {
+        const report = (percent, phase, state = "running", message = "") => {
+          if (typeof progress === "function") {
+            progress({ percent, phase, state, message });
+          }
+        };
+
+        let visibleMeshes = 0;
+        root.traverse((obj) => {
+          if (obj && obj.isMesh && obj.visible) {
+            visibleMeshes += 1;
+          }
+        });
+        if (visibleMeshes === 0) {
+          throw new Error(I18n.t("view.prefabAssemblyExportNoVisible"));
+        }
+
+        report(5, "prepare", "running");
+        const enabledSignature = entries
+          .filter((item) => item?.enabled)
+          .map((item) => `${item.label || rootLabel}:${item.itemId || ""}`)
+          .sort()
+          .join("|");
+        const signature = await hashText(
+          `${rootLabel}|pose=${activePosePreset}|visible=${visibleMeshes}|${enabledSignature}`
+        );
+        const cacheKey = `${sanitizeExportFileName(rootLabel)}-${signature}`;
+        const baseName = sanitizeExportFileName(rootLabel);
+        const fileName = `${baseName}_assembly_${activePosePreset || "reset"}.glb`;
+
+        if (assemblyExportMemoryCache.has(cacheKey)) {
+          report(100, "cached", "success");
+          return assemblyExportMemoryCache.get(cacheKey);
+        }
+        const persistent = await readAssemblyExportPersistentCache(cacheKey);
+        if (persistent?.blob) {
+          const cached = {
+            blob: persistent.blob,
+            filename: persistent.filename || fileName,
+          };
+          rememberAssemblyExportInMemory(cacheKey, cached);
+          report(100, "cached", "success");
+          return cached;
+        }
+
+        report(18, "collect", "running");
+        const exporter = new GLTFExporter();
+        let progressValue = 24;
+        const pulse = setInterval(() => {
+          progressValue = Math.min(90, progressValue + 2.2);
+          report(progressValue, "export", "running");
+        }, 220);
+
+        let result = null;
+        try {
+          result = await new Promise((resolve, reject) => {
+            exporter.parse(
+              root,
+              (output) => resolve(output),
+              (err) => reject(err || new Error("export failed")),
+              {
+                binary: true,
+                onlyVisible: true,
+                includeCustomExtensions: true,
+              }
+            );
+          });
+        } finally {
+          clearInterval(pulse);
+        }
+
+        let blob = null;
+        if (result instanceof ArrayBuffer) {
+          blob = new Blob([result], { type: "model/gltf-binary" });
+        } else if (typeof result === "string") {
+          blob = new Blob([result], { type: "model/gltf+json" });
+        } else {
+          blob = new Blob([JSON.stringify(result)], { type: "model/gltf+json" });
+        }
+
+        report(94, "cache", "running");
+        const output = { blob, filename: fileName };
+        rememberAssemblyExportInMemory(cacheKey, output);
+        await writeAssemblyExportPersistentCache(cacheKey, blob, fileName);
+        report(100, "done", "success");
+        return output;
+      };
+
       entries.forEach((entry) => {
         if (!entry.checkbox) {
           return;
@@ -791,6 +1258,13 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
           refreshVisibility();
         };
       });
+
+      if (hooks.onReady) {
+        hooks.onReady({
+          applyPosePreset,
+          exportAsGlb,
+        });
+      }
 
       const loader = new GLTFLoader();
       const loadAll = async () => {
@@ -825,6 +1299,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
             if (entry.row) {
               entry.row.classList.add("loaded");
             }
+            refreshRigInfo();
           } catch (err) {
             failed += 1;
             if (entry.row) {
@@ -835,6 +1310,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
           fitCameraToVisible();
         }
         updateStatus(loaded, failed, true);
+        refreshRigInfo();
       };
 
       const render = () => {
@@ -865,6 +1341,16 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
       if (!disposed) {
         statusEl.textContent = I18n.t("view.prefabAssemblyFailed");
       }
+      if (hooks.onRigUpdate) {
+        hooks.onRigUpdate({
+          available: false,
+          profiles: [],
+          skeletonCount: 0,
+          totalBones: 0,
+          mappedJointCount: 0,
+          humanoid: false,
+        });
+      }
     });
 
   return () => {
@@ -891,8 +1377,85 @@ function createPrefabAssemblySection(assembly, rootLabel) {
   hint.textContent = I18n.t("view.prefabAssemblyHint");
   section.appendChild(hint);
 
+  const controls = document.createElement("div");
+  controls.className = "prefab-assembly-toolbar";
+
+  const poseGroup = document.createElement("label");
+  poseGroup.className = "prefab-assembly-pose";
+  const poseLabel = document.createElement("span");
+  poseLabel.textContent = I18n.t("view.prefabPoseLabel");
+  const poseSelect = document.createElement("select");
+  poseSelect.className = "form-select form-select-sm";
+  assemblyPosePresetOptions.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = I18n.t(item.labelKey);
+    poseSelect.appendChild(option);
+  });
+  poseGroup.appendChild(poseLabel);
+  poseGroup.appendChild(poseSelect);
+  controls.appendChild(poseGroup);
+
+  const poseApplyButton = document.createElement("button");
+  poseApplyButton.type = "button";
+  poseApplyButton.className = "btn btn-outline-dark btn-sm";
+  poseApplyButton.textContent = I18n.t("view.prefabPoseApply");
+  poseApplyButton.disabled = true;
+  controls.appendChild(poseApplyButton);
+
+  const exportButton = document.createElement("button");
+  exportButton.type = "button";
+  exportButton.className = "btn btn-outline-dark btn-sm";
+  exportButton.textContent = I18n.t("view.prefabAssemblyExportButton");
+  exportButton.disabled = true;
+  controls.appendChild(exportButton);
+
+  const prepareButton = document.createElement("button");
+  prepareButton.type = "button";
+  prepareButton.className = "btn btn-outline-dark btn-sm d-none";
+  prepareButton.textContent = I18n.t("view.prefabAssemblyPrepareButton", { count: "0" });
+  prepareButton.disabled = true;
+  controls.appendChild(prepareButton);
+  section.appendChild(controls);
+
+  const pendingHint = document.createElement("div");
+  pendingHint.className = "prefab-assembly-pending d-none";
+  section.appendChild(pendingHint);
+
+  const rigInfo = document.createElement("div");
+  rigInfo.className = "prefab-assembly-rig";
+  rigInfo.textContent = I18n.t("view.prefabRigDetecting");
+  section.appendChild(rigInfo);
+
+  const exportProgress = document.createElement("div");
+  exportProgress.className = "preview-export-progress prefab-assembly-export d-none";
+  const exportHead = document.createElement("div");
+  exportHead.className = "preview-export-progress-head";
+  const exportLabel = document.createElement("span");
+  exportLabel.textContent = I18n.t("view.prefabAssemblyExportIdle");
+  const exportValue = document.createElement("span");
+  exportValue.textContent = "0%";
+  exportHead.appendChild(exportLabel);
+  exportHead.appendChild(exportValue);
+  const exportTrack = document.createElement("div");
+  exportTrack.className = "progress preview-export-progress-track";
+  const exportBar = document.createElement("div");
+  exportBar.className = "progress-bar";
+  exportBar.setAttribute("role", "progressbar");
+  exportBar.style.width = "0%";
+  exportBar.setAttribute("aria-valuemin", "0");
+  exportBar.setAttribute("aria-valuemax", "100");
+  exportBar.setAttribute("aria-valuenow", "0");
+  exportTrack.appendChild(exportBar);
+  exportProgress.appendChild(exportHead);
+  exportProgress.appendChild(exportTrack);
+  section.appendChild(exportProgress);
+
   const components = Array.isArray(assembly?.components)
     ? assembly.components.filter((item) => item && (item.label || rootLabel))
+    : [];
+  const pending = Array.isArray(assembly?.pendingDependencies)
+    ? assembly.pendingDependencies.filter((item) => item && item.label)
     : [];
   if (!components.length) {
     const empty = document.createElement("div");
@@ -900,6 +1463,40 @@ function createPrefabAssemblySection(assembly, rootLabel) {
     empty.textContent = I18n.t("view.prefabAssemblyNoComponents");
     section.appendChild(empty);
     return section;
+  }
+
+  const setAssemblyExportProgress = ({ visible, percent, text, state }) => {
+    if (!visible) {
+      exportProgress.classList.add("d-none");
+      exportProgress.classList.remove("is-error", "is-success");
+      exportLabel.textContent = I18n.t("view.prefabAssemblyExportIdle");
+      exportValue.textContent = "0%";
+      exportBar.style.width = "0%";
+      exportBar.setAttribute("aria-valuenow", "0");
+      return;
+    }
+    const safe = clampPercent(percent);
+    exportProgress.classList.remove("d-none");
+    exportProgress.classList.toggle("is-error", state === "error");
+    exportProgress.classList.toggle("is-success", state === "success");
+    exportLabel.textContent = text || I18n.t("view.prefabAssemblyExportIdle");
+    exportValue.textContent = `${Math.round(safe)}%`;
+    exportBar.style.width = `${safe}%`;
+    exportBar.setAttribute("aria-valuenow", String(Math.round(safe)));
+  };
+
+  if (pending.length) {
+    prepareButton.classList.remove("d-none");
+    prepareButton.disabled = false;
+    prepareButton.textContent = I18n.t("view.prefabAssemblyPrepareButton", {
+      count: String(pending.length),
+    });
+    pendingHint.classList.remove("d-none");
+    pendingHint.textContent = I18n.t("view.prefabAssemblyPending", {
+      count: String(pending.length),
+    });
+  } else {
+    pendingHint.classList.add("d-none");
   }
 
   const layout = document.createElement("div");
@@ -965,6 +1562,161 @@ function createPrefabAssemblySection(assembly, rootLabel) {
   layout.appendChild(list);
   section.appendChild(layout);
 
+  let viewerApi = null;
+  let rigAvailable = false;
+  let preparingPending = false;
+  poseApplyButton.onclick = () => {
+    if (!viewerApi || !rigAvailable) {
+      return;
+    }
+    const ok = viewerApi.applyPosePreset(poseSelect.value);
+    if (!ok) {
+      rigInfo.textContent = I18n.t("view.prefabRigPoseUnavailable");
+    }
+  };
+
+  prepareButton.onclick = async () => {
+    if (preparingPending || !pending.length) {
+      return;
+    }
+    preparingPending = true;
+    prepareButton.disabled = true;
+    exportButton.disabled = true;
+    poseApplyButton.disabled = true;
+    let failed = 0;
+
+    try {
+      for (let index = 0; index < pending.length; index += 1) {
+        const item = pending[index];
+        const depLabel = String(item?.label || "").trim();
+        if (!depLabel) {
+          failed += 1;
+          continue;
+        }
+        setAssemblyExportProgress({
+          visible: true,
+          percent: (index / pending.length) * 100,
+          text: I18n.t("view.prefabAssemblyPreparing", {
+            index: String(index + 1),
+            total: String(pending.length),
+            label: depLabel,
+          }),
+          state: "running",
+        });
+
+        try {
+          const response = await fetch(
+            `/api/entry/preview/export?label=${encodeURIComponent(depLabel)}&force=0`,
+            {
+              method: "POST",
+              headers: { "Accept": "application/json" },
+            }
+          );
+          if (!response.ok) {
+            throw new Error((await response.text()).trim() || I18n.t("view.exportFailed"));
+          }
+          const payload = await response.json();
+          const taskId = payload?.task?.id;
+          if (!taskId) {
+            throw new Error(I18n.t("view.prefabAssemblyPrepareNoTask"));
+          }
+          await pollPreviewExportTaskSnapshot(taskId, (task) => {
+            const safe = clampPercent(task.percent);
+            const overall = ((index + safe / 100) / pending.length) * 100;
+            const status = String(task.status || "running").toLowerCase();
+            const phaseText = exportPhaseText(task.phase, task.message);
+            setAssemblyExportProgress({
+              visible: true,
+              percent: overall,
+              text: `${I18n.t("view.prefabAssemblyPreparing", {
+                index: String(index + 1),
+                total: String(pending.length),
+                label: depLabel,
+              })} · ${phaseText}`,
+              state: status,
+            });
+          });
+        } catch (err) {
+          failed += 1;
+        }
+      }
+    } finally {
+      preparingPending = false;
+    }
+
+    if (failed > 0) {
+      setAssemblyExportProgress({
+        visible: true,
+        percent: 100,
+        text: I18n.t("view.prefabAssemblyPrepareFailed", { count: String(failed) }),
+        state: "error",
+      });
+      pendingHint.classList.remove("d-none");
+      pendingHint.textContent = I18n.t("view.prefabAssemblyPrepareFailed", {
+        count: String(failed),
+      });
+      prepareButton.disabled = false;
+      exportButton.disabled = !viewerApi;
+      poseApplyButton.disabled = !rigAvailable;
+      return;
+    }
+
+    setAssemblyExportProgress({
+      visible: true,
+      percent: 100,
+      text: I18n.t("view.prefabAssemblyPrepareDone"),
+      state: "success",
+    });
+    pendingHint.classList.add("d-none");
+    await wait(180);
+    await loadEntry();
+  };
+
+  exportButton.onclick = async () => {
+    if (!viewerApi || typeof viewerApi.exportAsGlb !== "function") {
+      return;
+    }
+    exportButton.disabled = true;
+    if (pending.length) {
+      prepareButton.disabled = true;
+    }
+    setAssemblyExportProgress({
+      visible: true,
+      percent: 1,
+      text: I18n.t("view.prefabAssemblyExportPrepare"),
+      state: "running",
+    });
+    try {
+      const output = await viewerApi.exportAsGlb((state) => {
+        setAssemblyExportProgress({
+          visible: true,
+          percent: state.percent,
+          text: assemblyExportProgressText(state.phase),
+          state: state.state,
+        });
+      });
+      triggerBlobDownload(output.blob, output.filename);
+      setAssemblyExportProgress({
+        visible: true,
+        percent: 100,
+        text: I18n.t("view.prefabAssemblyExportDone"),
+        state: "success",
+      });
+    } catch (err) {
+      setAssemblyExportProgress({
+        visible: true,
+        percent: 100,
+        text: err?.message || I18n.t("view.prefabAssemblyExportFailed"),
+        state: "error",
+      });
+    } finally {
+      exportButton.disabled = false;
+      if (pending.length && !preparingPending) {
+        prepareButton.disabled = false;
+      }
+    }
+  };
+
   const missing = Array.isArray(assembly?.missingDependencies)
     ? assembly.missingDependencies
     : [];
@@ -977,7 +1729,31 @@ function createPrefabAssemblySection(assembly, rootLabel) {
     section.appendChild(footer);
   }
 
-  addPreviewDisposer(mountPrefabAssemblyViewer(viewport, status, entries, rootLabel));
+  addPreviewDisposer(
+    mountPrefabAssemblyViewer(viewport, status, entries, rootLabel, {
+      onReady(api) {
+        viewerApi = api;
+        exportButton.disabled = false;
+      },
+      onRigUpdate(info) {
+        rigAvailable = Boolean(info?.available);
+        if (!rigAvailable) {
+          rigInfo.textContent = I18n.t("view.prefabRigNone");
+          poseApplyButton.disabled = true;
+          return;
+        }
+        poseApplyButton.disabled = false;
+        const payload = {
+          skeletons: String(info.skeletonCount || 0),
+          bones: String(info.totalBones || 0),
+          mapped: String(info.mappedJointCount || 0),
+        };
+        rigInfo.textContent = info.humanoid
+          ? I18n.t("view.prefabRigHumanoid", payload)
+          : I18n.t("view.prefabRigGeneric", payload);
+      },
+    })
+  );
   return section;
 }
 
