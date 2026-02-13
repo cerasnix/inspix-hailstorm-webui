@@ -110,6 +110,18 @@ type gltfDocument struct {
 	Scenes []gltfScene `json:"scenes"`
 }
 
+type gltfGeometryPrimitive struct {
+	Attributes map[string]int `json:"attributes"`
+}
+
+type gltfGeometryMesh struct {
+	Primitives []gltfGeometryPrimitive `json:"primitives"`
+}
+
+type gltfGeometryDocument struct {
+	Meshes []gltfGeometryMesh `json:"meshes"`
+}
+
 func resolvePreview(entryLabel string, entryType string, resourceType uint32, plainPath string) PreviewInfo {
 	if direct := sniffDirectPreview(plainPath); direct.Available {
 		direct.Path = plainPath
@@ -1921,4 +1933,61 @@ func sniffKnown(buf []byte) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func modelHasRenderableGeometry(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || !fileExists(path) {
+		return false
+	}
+
+	doc, err := parseGLTFGeometryDocument(path)
+	if err != nil {
+		return false
+	}
+	if len(doc.Meshes) == 0 {
+		return false
+	}
+	for _, mesh := range doc.Meshes {
+		if len(mesh.Primitives) == 0 {
+			continue
+		}
+		for _, primitive := range mesh.Primitives {
+			if len(primitive.Attributes) == 0 {
+				continue
+			}
+			if _, ok := primitive.Attributes["POSITION"]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parseGLTFGeometryDocument(path string) (gltfGeometryDocument, error) {
+	path = strings.TrimSpace(path)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".glb":
+		chunk, err := readGLBJSONChunk(path)
+		if err != nil {
+			return gltfGeometryDocument{}, err
+		}
+		doc := gltfGeometryDocument{}
+		if err := json.Unmarshal(chunk, &doc); err != nil {
+			return gltfGeometryDocument{}, err
+		}
+		return doc, nil
+	case ".gltf":
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return gltfGeometryDocument{}, err
+		}
+		doc := gltfGeometryDocument{}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return gltfGeometryDocument{}, err
+		}
+		return doc, nil
+	default:
+		return gltfGeometryDocument{}, fmt.Errorf("unsupported model format")
+	}
 }

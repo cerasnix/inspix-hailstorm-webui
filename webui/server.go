@@ -88,6 +88,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/filters", s.handleFilters)
 	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/entry", s.handleEntry)
+	mux.HandleFunc("/api/entry/parents", s.handleEntryParents)
 	mux.HandleFunc("/api/entry/preview", s.handleEntryPreview)
 	mux.HandleFunc("/api/entry/preview/export", s.handleEntryPreviewExport)
 	mux.HandleFunc("/api/entry/preview/export/status", s.handleEntryPreviewExportStatus)
@@ -263,7 +264,14 @@ func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
 	preview := PreviewInfo{}
 	if plainOK {
 		preview = resolvePreview(entry.StrLabelCrc, entry.StrTypeCrc, entry.ResourceType, plainPath)
+		if preview.Kind == "prefab" {
+			if preview.Meta == nil {
+				preview.Meta = map[string]any{}
+			}
+			preview.Meta["assembly"] = s.resolvePrefabAssembly(entry, preview)
+		}
 	}
+	parents := s.resolveEntryParents(entry.StrLabelCrc, 64)
 
 	yamlName := ""
 	yamlOK := false
@@ -293,9 +301,28 @@ func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
 		"plainName":      assetDisplayName(entry),
 		"yamlAvailable":  yamlOK,
 		"yamlName":       yamlName,
+		"parents":        parents,
 		"preview":        previewPayload(preview),
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) handleEntryParents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	label := strings.TrimSpace(r.URL.Query().Get("label"))
+	if label == "" {
+		http.Error(w, "missing label", http.StatusBadRequest)
+		return
+	}
+	limit := 64
+	writeJSON(w, map[string]any{
+		"ok":      true,
+		"label":   label,
+		"parents": s.resolveEntryParents(label, limit),
+	})
 }
 
 func (s *Server) handleEntryPreview(w http.ResponseWriter, r *http.Request) {
@@ -662,6 +689,174 @@ func (s *Server) findEntry(label string) (manifest.Entry, error) {
 		}
 	}
 	return manifest.Entry{}, errors.New("entry not found")
+}
+
+func (s *Server) resolveEntryParents(label string, limit int) []map[string]any {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	_ = s.catalog.Reload()
+	entries := s.catalog.Entries()
+
+	parents := make([]map[string]any, 0, 16)
+	for _, entry := range entries {
+		if !containsToken(entry.StrDepCrcs, label) {
+			continue
+		}
+		parents = append(parents, map[string]any{
+			"label":        entry.StrLabelCrc,
+			"type":         entry.StrTypeCrc,
+			"resourceType": entry.ResourceType,
+			"size":         entry.Size,
+		})
+	}
+	sort.Slice(parents, func(i, j int) bool {
+		left := strings.ToLower(fmt.Sprintf("%s", parents[i]["label"]))
+		right := strings.ToLower(fmt.Sprintf("%s", parents[j]["label"]))
+		return left < right
+	})
+	if limit > 0 && len(parents) > limit {
+		parents = parents[:limit]
+	}
+	return parents
+}
+
+func containsToken(values []string, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo) map[string]any {
+	_ = s.catalog.Reload()
+	entries := s.catalog.Entries()
+	entryMap := make(map[string]manifest.Entry, len(entries))
+	for _, item := range entries {
+		entryMap[item.StrLabelCrc] = item
+	}
+
+	type assemblyComponent struct {
+		Label  string
+		ItemID string
+		Name   string
+		Type   string
+		Source string
+	}
+
+	components := make([]assemblyComponent, 0, 12)
+	seen := map[string]struct{}{}
+	addComponent := func(ownerLabel string, source string, itemID string, name string, ctype string, path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || !modelHasRenderableGeometry(path) {
+			return
+		}
+		key := ownerLabel + "|" + itemID + "|" + path
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = filepath.Base(path)
+		}
+		components = append(components, assemblyComponent{
+			Label:  ownerLabel,
+			ItemID: strings.TrimSpace(itemID),
+			Name:   name,
+			Type:   strings.TrimSpace(ctype),
+			Source: source,
+		})
+	}
+
+	appendFromPreview := func(ownerLabel string, source string, info PreviewInfo) {
+		if strings.EqualFold(strings.TrimSpace(info.Kind), "model") {
+			addComponent(ownerLabel, source, "", filepath.Base(info.Path), info.ContentType, info.Path)
+		}
+		for _, item := range info.Items {
+			kind := strings.ToLower(strings.TrimSpace(item.Kind))
+			if kind == "" && strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.ContentType)), "model/") {
+				kind = "model"
+			}
+			if kind != "model" {
+				continue
+			}
+			addComponent(ownerLabel, source, item.ID, item.Name, item.ContentType, item.Path)
+		}
+	}
+
+	appendFromPreview(entry.StrLabelCrc, "self", preview)
+
+	uniqueDeps := make([]string, 0, len(entry.StrDepCrcs))
+	depSeen := map[string]struct{}{}
+	for _, dep := range entry.StrDepCrcs {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		if _, exists := depSeen[dep]; exists {
+			continue
+		}
+		depSeen[dep] = struct{}{}
+		uniqueDeps = append(uniqueDeps, dep)
+	}
+	sort.Strings(uniqueDeps)
+
+	missing := make([]string, 0, 8)
+	for _, depLabel := range uniqueDeps {
+		depEntry, ok := entryMap[depLabel]
+		if !ok {
+			missing = append(missing, depLabel)
+			continue
+		}
+		depPlainPath := plainAssetPath(depEntry)
+		if !fileExists(depPlainPath) {
+			missing = append(missing, depLabel)
+			continue
+		}
+		depPreview := resolvePreview(
+			depEntry.StrLabelCrc,
+			depEntry.StrTypeCrc,
+			depEntry.ResourceType,
+			depPlainPath,
+		)
+		appendFromPreview(depEntry.StrLabelCrc, "dependency", depPreview)
+	}
+
+	sort.Slice(components, func(i, j int) bool {
+		if components[i].Source != components[j].Source {
+			return components[i].Source < components[j].Source
+		}
+		if components[i].Label != components[j].Label {
+			return components[i].Label < components[j].Label
+		}
+		return strings.ToLower(components[i].Name) < strings.ToLower(components[j].Name)
+	})
+
+	componentPayload := make([]map[string]any, 0, len(components))
+	for _, component := range components {
+		componentPayload = append(componentPayload, map[string]any{
+			"label":  component.Label,
+			"itemId": component.ItemID,
+			"name":   component.Name,
+			"type":   component.Type,
+			"source": component.Source,
+		})
+	}
+
+	return map[string]any{
+		"available":           len(componentPayload) > 0,
+		"componentCount":      len(componentPayload),
+		"components":          componentPayload,
+		"missingDependencies": missing,
+	}
 }
 
 func filterEntries(entries []manifest.Entry, query string, field string) []manifest.Entry {

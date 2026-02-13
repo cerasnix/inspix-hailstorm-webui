@@ -21,6 +21,7 @@ let viewDiffToken = 0;
 let previewRenderDisposers = [];
 let previewExportRunToken = 0;
 let previewAudioContext = null;
+let threeModulesPromise = null;
 
 function addPreviewDisposer(disposer) {
   if (typeof disposer === "function") {
@@ -179,6 +180,39 @@ function renderPills(container, items) {
     pill.className = "pill";
     pill.textContent = item;
     container.appendChild(pill);
+  });
+}
+
+function renderParentList(parents) {
+  const container = document.getElementById("parentList");
+  if (!container) {
+    return;
+  }
+  const list = Array.isArray(parents) ? parents : [];
+  if (!list.length) {
+    container.textContent = I18n.t("view.noParents");
+    return;
+  }
+
+  container.innerHTML = "";
+  list.forEach((item) => {
+    const row = document.createElement("a");
+    row.className = "parent-item";
+    row.href = `/view?label=${encodeURIComponent(item.label || "")}`;
+    row.target = "_blank";
+    row.rel = "noopener noreferrer";
+
+    const label = document.createElement("span");
+    label.className = "parent-item-label";
+    label.textContent = item.label || "-";
+
+    const meta = document.createElement("span");
+    meta.className = "parent-item-meta";
+    meta.textContent = `${item.type || "-"} · ${App.formatBytes(item.size || 0)}`;
+
+    row.appendChild(label);
+    row.appendChild(meta);
+    container.appendChild(row);
   });
 }
 
@@ -598,6 +632,355 @@ function renderAudioPreview(container, preview, label) {
   container.appendChild(grid);
 }
 
+async function loadThreeModules() {
+  if (!threeModulesPromise) {
+    threeModulesPromise = Promise.all([
+      import("https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"),
+      import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/controls/OrbitControls.js"),
+      import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/loaders/GLTFLoader.js"),
+    ]).then(([threeMod, controlsMod, loaderMod]) => ({
+      THREE: threeMod,
+      OrbitControls: controlsMod.OrbitControls,
+      GLTFLoader: loaderMod.GLTFLoader,
+    }));
+  }
+  return threeModulesPromise;
+}
+
+function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel) {
+  let disposed = false;
+  let rafId = 0;
+  let resizeOff = () => {};
+  let cleanupRenderer = () => {};
+
+  loadThreeModules()
+    .then(({ THREE, OrbitControls, GLTFLoader }) => {
+      if (disposed) {
+        return;
+      }
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance",
+      });
+      if ("outputColorSpace" in renderer && "SRGBColorSpace" in THREE) {
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+      }
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      viewport.innerHTML = "";
+      viewport.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(44, 1, 0.01, 5000);
+      camera.position.set(1.2, 1.1, 2.4);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+
+      const hemi = new THREE.HemisphereLight(0xf7fbff, 0x5f6d7b, 1.08);
+      scene.add(hemi);
+      const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
+      keyLight.position.set(3, 6, 4);
+      scene.add(keyLight);
+      const fillLight = new THREE.DirectionalLight(0x86a2c4, 0.45);
+      fillLight.position.set(-4, 2.5, -3);
+      scene.add(fillLight);
+
+      const root = new THREE.Group();
+      scene.add(root);
+
+      const grid = new THREE.GridHelper(8, 16, 0x5f7488, 0x8da2b4);
+      if (grid.material) {
+        grid.material.transparent = true;
+        grid.material.opacity = 0.22;
+      }
+      grid.position.y = -0.001;
+      scene.add(grid);
+
+      const resize = () => {
+        if (disposed) {
+          return;
+        }
+        const width = Math.max(220, viewport.clientWidth || 220);
+        const height = Math.max(240, viewport.clientHeight || 240);
+        renderer.setSize(width, height, false);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+      };
+      resize();
+
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(() => resize());
+        observer.observe(viewport);
+        resizeOff = () => observer.disconnect();
+      } else {
+        window.addEventListener("resize", resize);
+        resizeOff = () => window.removeEventListener("resize", resize);
+      }
+
+      const fitCameraToVisible = () => {
+        const box = new THREE.Box3();
+        let hasMesh = false;
+        root.traverse((obj) => {
+          if (!obj.visible || !obj.isMesh) {
+            return;
+          }
+          hasMesh = true;
+          box.expandByObject(obj);
+        });
+        if (!hasMesh || box.isEmpty()) {
+          return;
+        }
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 0.01);
+        const distance =
+          (maxDim / (2 * Math.tan((camera.fov * Math.PI) / 360))) * 1.42;
+        const offset = new THREE.Vector3(0.9, 0.66, 1).normalize().multiplyScalar(distance);
+        camera.position.copy(center).add(offset);
+        camera.near = Math.max(distance / 280, 0.01);
+        camera.far = Math.max(distance * 30, 80);
+        camera.updateProjectionMatrix();
+        controls.target.copy(center);
+        controls.update();
+        grid.position.y = box.min.y;
+      };
+
+      const updateStatus = (loaded, failed, done = false) => {
+        const total = entries.length;
+        if (!done) {
+          statusEl.textContent = I18n.t("view.prefabAssemblyLoading", {
+            loaded: String(loaded),
+            total: String(total),
+          });
+          return;
+        }
+        if (loaded === 0 || failed === total) {
+          statusEl.textContent = I18n.t("view.prefabAssemblyFailed");
+          return;
+        }
+        if (failed > 0) {
+          statusEl.textContent = I18n.t("view.prefabAssemblyPartial", {
+            loaded: String(loaded),
+            total: String(total),
+          });
+          return;
+        }
+        statusEl.textContent = I18n.t("view.prefabAssemblyReady", {
+          count: String(loaded),
+        });
+      };
+
+      const refreshVisibility = () => {
+        entries.forEach((entry) => {
+          if (entry.object) {
+            entry.object.visible = Boolean(entry.enabled);
+          }
+        });
+        fitCameraToVisible();
+      };
+
+      entries.forEach((entry) => {
+        if (!entry.checkbox) {
+          return;
+        }
+        entry.checkbox.onchange = () => {
+          entry.enabled = Boolean(entry.checkbox.checked);
+          refreshVisibility();
+        };
+      });
+
+      const loader = new GLTFLoader();
+      const loadAll = async () => {
+        let loaded = 0;
+        let failed = 0;
+        updateStatus(loaded, failed, false);
+
+        for (const entry of entries) {
+          if (disposed) {
+            return;
+          }
+          const label = entry.label || rootLabel;
+          const itemId = entry.itemId || "";
+          try {
+            const gltf = await loader.loadAsync(previewItemUrl(label, itemId));
+            if (disposed) {
+              return;
+            }
+            const object =
+              gltf.scene ||
+              (Array.isArray(gltf.scenes) && gltf.scenes.length > 0
+                ? gltf.scenes[0]
+                : null);
+            if (!object) {
+              throw new Error("scene missing");
+            }
+            object.name = entry.name || label;
+            object.visible = Boolean(entry.enabled);
+            root.add(object);
+            entry.object = object;
+            loaded += 1;
+            if (entry.row) {
+              entry.row.classList.add("loaded");
+            }
+          } catch (err) {
+            failed += 1;
+            if (entry.row) {
+              entry.row.classList.add("failed");
+            }
+          }
+          updateStatus(loaded, failed, false);
+          fitCameraToVisible();
+        }
+        updateStatus(loaded, failed, true);
+      };
+
+      const render = () => {
+        if (disposed) {
+          return;
+        }
+        controls.update();
+        renderer.render(scene, camera);
+        rafId = requestAnimationFrame(render);
+      };
+      render();
+      loadAll();
+
+      cleanupRenderer = () => {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+        resizeOff();
+        controls.dispose();
+        renderer.dispose();
+        if (renderer.domElement && renderer.domElement.parentNode === viewport) {
+          viewport.removeChild(renderer.domElement);
+        }
+      };
+    })
+    .catch(() => {
+      if (!disposed) {
+        statusEl.textContent = I18n.t("view.prefabAssemblyFailed");
+      }
+    });
+
+  return () => {
+    disposed = true;
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    resizeOff();
+    cleanupRenderer();
+  };
+}
+
+function createPrefabAssemblySection(assembly, rootLabel) {
+  const section = document.createElement("section");
+  section.className = "prefab-section prefab-assembly";
+
+  const title = document.createElement("h4");
+  title.textContent = I18n.t("view.prefabAssemblyTitle");
+  section.appendChild(title);
+
+  const hint = document.createElement("div");
+  hint.className = "prefab-assembly-hint";
+  hint.textContent = I18n.t("view.prefabAssemblyHint");
+  section.appendChild(hint);
+
+  const components = Array.isArray(assembly?.components)
+    ? assembly.components.filter((item) => item && (item.label || rootLabel))
+    : [];
+  if (!components.length) {
+    const empty = document.createElement("div");
+    empty.className = "prefab-empty";
+    empty.textContent = I18n.t("view.prefabAssemblyNoComponents");
+    section.appendChild(empty);
+    return section;
+  }
+
+  const layout = document.createElement("div");
+  layout.className = "prefab-assembly-layout";
+
+  const viewportShell = document.createElement("div");
+  viewportShell.className = "prefab-assembly-viewport-shell";
+  const viewport = document.createElement("div");
+  viewport.className = "prefab-assembly-viewport";
+  const status = document.createElement("div");
+  status.className = "prefab-assembly-status";
+  status.textContent = I18n.t("view.prefabAssemblyLoading", {
+    loaded: "0",
+    total: String(components.length),
+  });
+  viewportShell.appendChild(viewport);
+  viewportShell.appendChild(status);
+  layout.appendChild(viewportShell);
+
+  const list = document.createElement("div");
+  list.className = "prefab-assembly-list";
+
+  const entries = components.map((component, index) => {
+    const row = document.createElement("label");
+    row.className = "prefab-assembly-item";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true;
+    checkbox.className = "prefab-assembly-checkbox";
+
+    const copy = document.createElement("div");
+    copy.className = "prefab-assembly-copy";
+    const name = document.createElement("div");
+    name.className = "prefab-assembly-name";
+    name.textContent =
+      component.name || `${I18n.t("view.prefabItem")} ${index + 1}`;
+    const meta = document.createElement("div");
+    meta.className = "prefab-assembly-meta";
+    const sourceText =
+      component.source === "self"
+        ? I18n.t("view.prefabAssemblyFromSelf")
+        : I18n.t("view.prefabAssemblyFromDependency");
+    meta.textContent = `${sourceText} · ${component.label || rootLabel}`;
+
+    copy.appendChild(name);
+    copy.appendChild(meta);
+    row.appendChild(checkbox);
+    row.appendChild(copy);
+    list.appendChild(row);
+
+    return {
+      label: component.label || rootLabel,
+      itemId: component.itemId || "",
+      name: component.name || "",
+      type: component.type || "",
+      source: component.source || "",
+      enabled: true,
+      object: null,
+      checkbox,
+      row,
+    };
+  });
+  layout.appendChild(list);
+  section.appendChild(layout);
+
+  const missing = Array.isArray(assembly?.missingDependencies)
+    ? assembly.missingDependencies
+    : [];
+  if (missing.length) {
+    const footer = document.createElement("div");
+    footer.className = "prefab-assembly-missing";
+    footer.textContent = I18n.t("view.prefabAssemblyMissingDeps", {
+      count: String(missing.length),
+    });
+    section.appendChild(footer);
+  }
+
+  addPreviewDisposer(mountPrefabAssemblyViewer(viewport, status, entries, rootLabel));
+  return section;
+}
+
 function translatePrefabComponent(name) {
   const clean = String(name || "").trim();
   if (!clean) {
@@ -756,6 +1139,8 @@ function renderPrefabPreview(container, preview, label) {
   const wrapper = document.createElement("div");
   wrapper.className = "prefab-preview";
 
+  const meta = preview.meta || {};
+
   const stage = document.createElement("div");
   stage.className = "prefab-stage";
   const media = document.createElement("div");
@@ -844,6 +1229,10 @@ function renderPrefabPreview(container, preview, label) {
     stage.appendChild(switcher);
   }
 
+  if (meta.assembly && meta.assembly.available) {
+    stage.appendChild(createPrefabAssemblySection(meta.assembly, label));
+  }
+
   const panel = document.createElement("aside");
   panel.className = "prefab-panel";
 
@@ -852,7 +1241,6 @@ function renderPrefabPreview(container, preview, label) {
   panelTitle.textContent = I18n.t("view.prefabSummary");
   panel.appendChild(panelTitle);
 
-  const meta = preview.meta || {};
   const bundleName = meta.bundleName || "-";
   const dependencyCount = Number(meta.dependencyCount || 0);
   const assetTotal = Number(meta.assetTotal || 0);
@@ -1399,6 +1787,7 @@ async function loadEntry() {
   renderPills(document.getElementById("depList"), data.dependencies);
   renderPills(document.getElementById("contentList"), data.contentTypes);
   renderPills(document.getElementById("categoryList"), data.categories);
+  renderParentList(data.parents);
   renderPreview(data.preview, label);
   renderPreviewActions(data.preview, label);
   if (viewDiffReady) {
