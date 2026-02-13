@@ -1373,6 +1373,10 @@ func firstMatchRecursive(dir string, patterns []string) string {
 		if err != nil || entry.IsDir() {
 			return nil
 		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || info.Size() <= 0 {
+			return nil
+		}
 		name := entry.Name()
 		for _, pattern := range patterns {
 			ok, matchErr := filepath.Match(pattern, name)
@@ -1412,6 +1416,10 @@ func firstMatchRecursiveExt(dir string, exts []string) string {
 	match := ""
 	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || info.Size() <= 0 {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(entry.Name()))

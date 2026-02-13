@@ -750,6 +750,25 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 		Type   string
 		Source string
 	}
+	type assemblyTextureCandidate struct {
+		Label             string
+		Type              string
+		Role              string
+		Available         bool
+		PlainAvailable    bool
+		PreviewReady      bool
+		PreviewExportable bool
+		Owners            map[string]struct{}
+		Materials         map[string]struct{}
+		Sources           map[string]struct{}
+	}
+	type assemblyDepNode struct {
+		Label      string
+		OwnerModel string
+		Material   string
+		Depth      int
+		Source     string
+	}
 
 	components := make([]assemblyComponent, 0, 12)
 	seen := map[string]struct{}{}
@@ -811,6 +830,106 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 
 	missing := make([]string, 0, 8)
 	pending := make([]map[string]any, 0, 8)
+	textureCandidates := make(map[string]*assemblyTextureCandidate)
+	texturePreviewReadyCache := map[string]bool{}
+	texturePreviewExportableCache := map[string]bool{}
+	pendingTextureSet := map[string]manifest.Entry{}
+	addTextureCandidate := func(label string, ownerModel string, material string, source string) {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			return
+		}
+
+		depEntry, ok := entryMap[label]
+		depType := ""
+		plainAvailable := false
+		previewReady := false
+		previewExportable := false
+		if ok {
+			depType = strings.TrimSpace(depEntry.StrTypeCrc)
+			plainPath := plainAssetPath(depEntry)
+			plainAvailable = fileExists(plainPath)
+			if plainAvailable {
+				if ready, exists := texturePreviewReadyCache[label]; exists {
+					previewReady = ready
+					previewExportable = texturePreviewExportableCache[label]
+				} else {
+					info := resolvePreview(
+						depEntry.StrLabelCrc,
+						depEntry.StrTypeCrc,
+						depEntry.ResourceType,
+						plainPath,
+					)
+					previewReady = info.Available
+					previewExportable = info.Exportable
+					texturePreviewReadyCache[label] = previewReady
+					texturePreviewExportableCache[label] = previewExportable
+				}
+			}
+		}
+		if prefabAssemblyDependencyKind(depType, label) != "texture" {
+			return
+		}
+
+		candidate, exists := textureCandidates[label]
+		if !exists {
+			candidate = &assemblyTextureCandidate{
+				Label:             label,
+				Type:              depType,
+				Role:              prefabAssemblyTextureRole(label),
+				Available:         plainAvailable && previewReady,
+				PlainAvailable:    plainAvailable,
+				PreviewReady:      previewReady,
+				PreviewExportable: previewExportable,
+				Owners:            map[string]struct{}{},
+				Materials:         map[string]struct{}{},
+				Sources:           map[string]struct{}{},
+			}
+			textureCandidates[label] = candidate
+		}
+		if strings.TrimSpace(candidate.Type) == "" && depType != "" {
+			candidate.Type = depType
+		}
+		candidate.PlainAvailable = candidate.PlainAvailable || plainAvailable
+		candidate.PreviewReady = candidate.PreviewReady || previewReady
+		candidate.PreviewExportable = candidate.PreviewExportable || previewExportable
+		candidate.Available = candidate.PlainAvailable && candidate.PreviewReady
+		if ownerModel = strings.TrimSpace(ownerModel); ownerModel != "" {
+			candidate.Owners[ownerModel] = struct{}{}
+		}
+		if material = strings.TrimSpace(material); material != "" {
+			candidate.Materials[material] = struct{}{}
+		}
+		if source = strings.TrimSpace(source); source != "" {
+			candidate.Sources[source] = struct{}{}
+		}
+		if ok && plainAvailable && !previewReady && previewExportable {
+			pendingTextureSet[label] = depEntry
+		}
+	}
+
+	queue := make([]assemblyDepNode, 0, len(uniqueDeps)*2)
+	visited := map[string]struct{}{}
+	enqueue := func(node assemblyDepNode) {
+		node.Label = strings.TrimSpace(node.Label)
+		if node.Label == "" {
+			return
+		}
+		key := fmt.Sprintf(
+			"%s|%s|%s|%d|%s",
+			node.Label,
+			strings.TrimSpace(node.OwnerModel),
+			strings.TrimSpace(node.Material),
+			node.Depth,
+			strings.TrimSpace(node.Source),
+		)
+		if _, exists := visited[key]; exists {
+			return
+		}
+		visited[key] = struct{}{}
+		queue = append(queue, node)
+	}
+
 	for _, depLabel := range uniqueDeps {
 		depEntry, ok := entryMap[depLabel]
 		if !ok {
@@ -820,26 +939,91 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 		depPlainPath := plainAssetPath(depEntry)
 		if !fileExists(depPlainPath) {
 			missing = append(missing, depLabel)
-			continue
+		} else {
+			depPreview := resolvePreview(
+				depEntry.StrLabelCrc,
+				depEntry.StrTypeCrc,
+				depEntry.ResourceType,
+				depPlainPath,
+			)
+			before := len(components)
+			appendFromPreview(depEntry.StrLabelCrc, "dependency", depPreview)
+			if len(components) == before && !depPreview.Available && shouldPreparePrefabAssemblyDependency(depEntry) {
+				pending = append(pending, map[string]any{
+					"label":        depEntry.StrLabelCrc,
+					"type":         depEntry.StrTypeCrc,
+					"resourceType": depEntry.ResourceType,
+					"size":         depEntry.Size,
+				})
+			}
 		}
-		depPreview := resolvePreview(
-			depEntry.StrLabelCrc,
-			depEntry.StrTypeCrc,
-			depEntry.ResourceType,
-			depPlainPath,
-		)
-		before := len(components)
-		appendFromPreview(depEntry.StrLabelCrc, "dependency", depPreview)
-		if len(components) > before {
-			continue
+
+		kind := prefabAssemblyDependencyKind(depEntry.StrTypeCrc, depEntry.StrLabelCrc)
+		owner := ""
+		material := ""
+		switch kind {
+		case "model":
+			owner = depEntry.StrLabelCrc
+		case "material":
+			material = depEntry.StrLabelCrc
 		}
-		if !depPreview.Available && shouldPreparePrefabAssemblyDependency(depEntry) {
-			pending = append(pending, map[string]any{
-				"label":        depEntry.StrLabelCrc,
-				"type":         depEntry.StrTypeCrc,
-				"resourceType": depEntry.ResourceType,
-				"size":         depEntry.Size,
-			})
+		enqueue(assemblyDepNode{
+			Label:      depEntry.StrLabelCrc,
+			OwnerModel: owner,
+			Material:   material,
+			Depth:      0,
+			Source:     "dependency",
+		})
+	}
+
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+
+		depEntry, ok := entryMap[node.Label]
+		depType := ""
+		if ok {
+			depType = depEntry.StrTypeCrc
+		}
+		kind := prefabAssemblyDependencyKind(depType, node.Label)
+		switch kind {
+		case "texture":
+			addTextureCandidate(node.Label, node.OwnerModel, node.Material, node.Source)
+			continue
+		case "material", "model":
+			if !ok || node.Depth >= 2 {
+				continue
+			}
+			nextOwner := node.OwnerModel
+			nextMaterial := node.Material
+			if kind == "model" {
+				nextOwner = depEntry.StrLabelCrc
+				nextMaterial = ""
+			} else if kind == "material" {
+				nextMaterial = depEntry.StrLabelCrc
+			}
+			for _, child := range depEntry.StrDepCrcs {
+				child = strings.TrimSpace(child)
+				if child == "" {
+					continue
+				}
+				childEntry, childOK := entryMap[child]
+				childType := ""
+				if childOK {
+					childType = childEntry.StrTypeCrc
+				}
+				childKind := prefabAssemblyDependencyKind(childType, child)
+				if childKind == "other" {
+					continue
+				}
+				enqueue(assemblyDepNode{
+					Label:      child,
+					OwnerModel: nextOwner,
+					Material:   nextMaterial,
+					Depth:      node.Depth + 1,
+					Source:     kind,
+				})
+			}
 		}
 	}
 
@@ -864,12 +1048,69 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 		})
 	}
 
+	textureLabels := make([]string, 0, len(textureCandidates))
+	for label := range textureCandidates {
+		textureLabels = append(textureLabels, label)
+	}
+	sort.Strings(textureLabels)
+
+	texturePayload := make([]map[string]any, 0, len(textureLabels))
+	missingTextureDeps := make([]string, 0, len(textureLabels))
+	pendingTextureDeps := make([]map[string]any, 0, len(textureLabels))
+	pendingTextureLabels := make([]string, 0, len(pendingTextureSet))
+	for label := range pendingTextureSet {
+		pendingTextureLabels = append(pendingTextureLabels, label)
+	}
+	sort.Strings(pendingTextureLabels)
+	for _, label := range pendingTextureLabels {
+		item := pendingTextureSet[label]
+		pendingTextureDeps = append(pendingTextureDeps, map[string]any{
+			"label":        item.StrLabelCrc,
+			"type":         item.StrTypeCrc,
+			"resourceType": item.ResourceType,
+			"size":         item.Size,
+		})
+	}
+	for _, label := range textureLabels {
+		candidate := textureCandidates[label]
+		if candidate == nil {
+			continue
+		}
+		sources := sortedStringSet(candidate.Sources)
+		source := "dependency"
+		if len(sources) > 0 {
+			source = sources[0]
+			if containsToken(sources, "material") {
+				source = "material"
+			}
+		}
+		if !candidate.PlainAvailable {
+			missingTextureDeps = append(missingTextureDeps, candidate.Label)
+		}
+		texturePayload = append(texturePayload, map[string]any{
+			"label":             candidate.Label,
+			"type":              candidate.Type,
+			"role":              candidate.Role,
+			"source":            source,
+			"available":         candidate.Available,
+			"plainAvailable":    candidate.PlainAvailable,
+			"previewReady":      candidate.PreviewReady,
+			"previewExportable": candidate.PreviewExportable,
+			"owners":            sortedStringSet(candidate.Owners),
+			"materials":         sortedStringSet(candidate.Materials),
+		})
+	}
+
 	return map[string]any{
-		"available":           len(componentPayload) > 0 || len(pending) > 0,
-		"componentCount":      len(componentPayload),
-		"components":          componentPayload,
-		"missingDependencies": missing,
-		"pendingDependencies": pending,
+		"available":                  len(componentPayload) > 0 || len(pending) > 0,
+		"componentCount":             len(componentPayload),
+		"components":                 componentPayload,
+		"missingDependencies":        missing,
+		"pendingDependencies":        pending,
+		"textureCount":               len(texturePayload),
+		"textureCandidates":          texturePayload,
+		"missingTextureDependencies": missingTextureDeps,
+		"pendingTextureDependencies": pendingTextureDeps,
 	}
 }
 
@@ -880,6 +1121,82 @@ func shouldPreparePrefabAssemblyDependency(entry manifest.Entry) bool {
 	}
 	label := strings.ToLower(strings.TrimSpace(entry.StrLabelCrc))
 	return strings.HasSuffix(label, ".fbx") || strings.HasSuffix(label, ".prefab")
+}
+
+func prefabAssemblyDependencyKind(entryType string, label string) string {
+	t := strings.ToLower(strings.TrimSpace(entryType))
+	l := strings.ToLower(strings.TrimSpace(label))
+
+	switch {
+	case t == "fbx" || t == "prefab" || strings.HasSuffix(l, ".fbx") || strings.HasSuffix(l, ".prefab"):
+		return "model"
+	case t == "mat" || strings.HasSuffix(l, ".mat"):
+		return "material"
+	case t == "png" ||
+		t == "jpg" ||
+		t == "jpeg" ||
+		t == "webp" ||
+		t == "bmp" ||
+		t == "tga" ||
+		t == "dds" ||
+		t == "ktx" ||
+		t == "ktx2" ||
+		t == "texture" ||
+		t == "texture2d" ||
+		t == "sprite" ||
+		strings.HasSuffix(l, ".png") ||
+		strings.HasSuffix(l, ".jpg") ||
+		strings.HasSuffix(l, ".jpeg") ||
+		strings.HasSuffix(l, ".webp") ||
+		strings.HasSuffix(l, ".bmp") ||
+		strings.HasSuffix(l, ".tga") ||
+		strings.HasSuffix(l, ".dds") ||
+		strings.HasSuffix(l, ".ktx") ||
+		strings.HasSuffix(l, ".ktx2"):
+		return "texture"
+	default:
+		return "other"
+	}
+}
+
+func prefabAssemblyTextureRole(label string) string {
+	l := strings.ToLower(strings.TrimSpace(label))
+	switch {
+	case strings.Contains(l, "controlmap"):
+		return "control"
+	case strings.Contains(l, "normal"):
+		return "normal"
+	case strings.Contains(l, "mask"):
+		return "mask"
+	case strings.Contains(l, "highlight"):
+		return "highlight"
+	case strings.Contains(l, "lens"):
+		return "lens"
+	case strings.Contains(l, "col0") || strings.Contains(l, "albedo") || strings.Contains(l, "diffuse"):
+		return "albedo"
+	case strings.Contains(l, "col1"):
+		return "detail"
+	case strings.Contains(l, "col2"):
+		return "detail2"
+	default:
+		return "other"
+	}
+}
+
+func sortedStringSet(input map[string]struct{}) []string {
+	if len(input) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(input))
+	for value := range input {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func filterEntries(entries []manifest.Entry, query string, field string) []manifest.Entry {

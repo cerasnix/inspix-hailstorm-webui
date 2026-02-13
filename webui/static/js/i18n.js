@@ -248,6 +248,8 @@ window.I18n = (() => {
       "view.prefabNoMedia": "No previewable media in this prefab export.",
       "view.prefabItem": "Item",
       "view.prefabPrimary": "Primary preview",
+      "view.prefabPrimaryShow": "Show original preview",
+      "view.prefabPrimaryHide": "Hide original preview",
       "view.prefabHierarchy": "Component hierarchy",
       "view.prefabHierarchyUnavailable": "Hierarchy data is unavailable.",
       "view.prefabHierarchySummary":
@@ -292,6 +294,14 @@ window.I18n = (() => {
         "Failed to prepare {{count}} dependency item(s).",
       "view.prefabAssemblyPrepareNoTask":
         "Failed to start dependency prepare task.",
+      "view.prefabAssemblyPendingDetecting":
+        "Checking dependency preview readiness...",
+      "view.prefabAssemblyTextureHint":
+        "Detected {{count}} texture candidate(s) from dependency chain.",
+      "view.prefabAssemblyTextureMissing":
+        "{{count}} texture dependency item(s) are missing locally.",
+      "view.prefabAssemblyTexturePending":
+        "{{count}} texture dependency item(s) are waiting for preview export.",
       "view.prefabPoseLabel": "Pose preset",
       "view.prefabPoseApply": "Apply pose",
       "view.prefabPoseReset": "Reset pose",
@@ -611,6 +621,8 @@ window.I18n = (() => {
       "view.prefabNoMedia": "当前 prefab 导出中没有可预览媒体。",
       "view.prefabItem": "项目",
       "view.prefabPrimary": "主预览",
+      "view.prefabPrimaryShow": "显示原模型预览",
+      "view.prefabPrimaryHide": "隐藏原模型预览",
       "view.prefabHierarchy": "组件层级",
       "view.prefabHierarchyUnavailable": "暂无可用层级数据。",
       "view.prefabHierarchySummary":
@@ -651,6 +663,14 @@ window.I18n = (() => {
         "有 {{count}} 个依赖项准备失败。",
       "view.prefabAssemblyPrepareNoTask":
         "未能启动依赖准备任务。",
+      "view.prefabAssemblyPendingDetecting":
+        "正在检测依赖预览状态...",
+      "view.prefabAssemblyTextureHint":
+        "从依赖链检测到 {{count}} 个贴图候选。",
+      "view.prefabAssemblyTextureMissing":
+        "有 {{count}} 个贴图依赖项未在本地找到。",
+      "view.prefabAssemblyTexturePending":
+        "有 {{count}} 个贴图依赖项尚未导出预览，将自动准备。",
       "view.prefabPoseLabel": "姿势预设",
       "view.prefabPoseApply": "应用姿势",
       "view.prefabPoseReset": "重置姿势",
@@ -970,6 +990,8 @@ window.I18n = (() => {
       "view.prefabNoMedia": "この prefab 出力にはプレビュー可能なメディアがありません。",
       "view.prefabItem": "項目",
       "view.prefabPrimary": "メインプレビュー",
+      "view.prefabPrimaryShow": "元モデルのプレビューを表示",
+      "view.prefabPrimaryHide": "元モデルのプレビューを隠す",
       "view.prefabHierarchy": "コンポーネント階層",
       "view.prefabHierarchyUnavailable": "階層データは利用できません。",
       "view.prefabHierarchySummary":
@@ -1016,6 +1038,14 @@ window.I18n = (() => {
         "{{count}} 件の依存準備に失敗しました。",
       "view.prefabAssemblyPrepareNoTask":
         "依存準備タスクを開始できませんでした。",
+      "view.prefabAssemblyPendingDetecting":
+        "依存プレビューの状態を確認中...",
+      "view.prefabAssemblyTextureHint":
+        "依存チェーンから {{count}} 件のテクスチャ候補を検出しました。",
+      "view.prefabAssemblyTextureMissing":
+        "ローカルに存在しないテクスチャ依存が {{count}} 件あります。",
+      "view.prefabAssemblyTexturePending":
+        "{{count}} 件のテクスチャ依存はプレビュー書き出し待ちです。",
       "view.prefabPoseLabel": "ポーズプリセット",
       "view.prefabPoseApply": "ポーズ適用",
       "view.prefabPoseReset": "ポーズをリセット",

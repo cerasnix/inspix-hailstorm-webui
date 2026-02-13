@@ -52,6 +52,502 @@ const rigBoneAliasMap = {
   leftFoot: ["leftfoot", "lfoot", "anklel", "leftankle"],
   rightFoot: ["rightfoot", "rfoot", "ankler", "rightankle"],
 };
+const assemblyTokenIgnoreSet = new Set([
+  "assetbundle",
+  "assets",
+  "model",
+  "mesh",
+  "prefab",
+  "dependency",
+  "self",
+  "mt",
+  "mat",
+  "fbx",
+  "glb",
+  "gltf",
+]);
+
+function splitAssemblyTokens(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/g, "")
+    .split(/[^a-z0-9]+/g)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 2 &&
+        !assemblyTokenIgnoreSet.has(token) &&
+        !/^\d+$/.test(token)
+    );
+}
+
+function buildAssemblyTokenSet(values) {
+  const set = new Set();
+  (Array.isArray(values) ? values : [values]).forEach((value) => {
+    splitAssemblyTokens(value).forEach((token) => set.add(token));
+  });
+  return set;
+}
+
+function looksLikeAssemblyIdentityToken(token) {
+  const text = String(token || "").trim().toLowerCase();
+  if (text.length < 6) {
+    return false;
+  }
+  const hasLetters = /[a-z]{3,}/.test(text);
+  const hasDigits = /\d{2,}/.test(text);
+  return hasLetters && hasDigits;
+}
+
+function assemblyIdentityToken(value) {
+  const tokens = splitAssemblyTokens(value);
+  for (const token of tokens) {
+    if (looksLikeAssemblyIdentityToken(token)) {
+      return token;
+    }
+  }
+  return "";
+}
+
+function assemblyIdentityFamily(token) {
+  const text = String(token || "").trim().toLowerCase();
+  if (!text) {
+    return "";
+  }
+  if (text.length >= 7 && /[a-z]$/.test(text)) {
+    return text.slice(0, -1);
+  }
+  return text;
+}
+
+function assemblyIdentityRoot(token) {
+  const text = String(token || "").trim().toLowerCase();
+  if (!text) {
+    return "";
+  }
+  const compact = text.replace(/[^a-z0-9]/g, "");
+  const strong = compact.match(/^([a-z]+[0-9]{2,}[a-z]{3})/);
+  if (strong && strong[1]) {
+    return strong[1];
+  }
+  const weak = compact.match(/^([a-z]+[0-9]{2,})/);
+  if (weak && weak[1]) {
+    return weak[1];
+  }
+  return "";
+}
+
+function assemblyCandidateIdentityState(candidate, ownerIdentity) {
+  if (!ownerIdentity) {
+    return "neutral";
+  }
+  const candidateIdentity = assemblyIdentityToken(candidate?.label || "");
+  if (!candidateIdentity) {
+    return "neutral";
+  }
+  if (candidateIdentity === ownerIdentity) {
+    return "exact";
+  }
+  const ownerFamily = assemblyIdentityFamily(ownerIdentity);
+  const candidateFamily = assemblyIdentityFamily(candidateIdentity);
+  if (ownerFamily && candidateFamily && ownerFamily === candidateFamily) {
+    return "family";
+  }
+  const ownerRoot = assemblyIdentityRoot(ownerIdentity);
+  const candidateRoot = assemblyIdentityRoot(candidateIdentity);
+  if (ownerRoot && candidateRoot && ownerRoot === candidateRoot) {
+    return "related";
+  }
+  return "mismatch";
+}
+
+function assemblyTextureRoleWeight(role) {
+  switch (String(role || "").trim().toLowerCase()) {
+    case "albedo":
+      return 90;
+    case "lens":
+      return 82;
+    case "highlight":
+      return 72;
+    case "detail":
+      return 36;
+    case "detail2":
+      return 30;
+    case "other":
+      return 12;
+    case "control":
+      return -68;
+    case "mask":
+      return -64;
+    case "normal":
+      return -72;
+    default:
+      return 10;
+  }
+}
+
+function assemblyTextureHintGroups(name) {
+  const lower = String(name || "").toLowerCase();
+  if (!lower) {
+    return [];
+  }
+  const groups = [];
+  if (lower.includes("eyelens")) {
+    groups.push(["eye_lens", "lens", "eye_col0"]);
+  } else if (lower.includes("eyeshadow")) {
+    groups.push(["eye_highlight", "eye_col0", "face_col1"]);
+  } else if (lower.includes("eye")) {
+    groups.push(["eye_col0", "eye"]);
+  }
+  if (lower.includes("brow")) {
+    groups.push(["face_col0", "brow"]);
+  }
+  if (lower.includes("face")) {
+    groups.push(["face_col0", "face"]);
+  }
+  if (lower.includes("hair")) {
+    groups.push(["hair_col0", "hair"]);
+  }
+  if (lower.includes("skin")) {
+    groups.push(["skin_col0", "skin"]);
+  }
+  if (lower.includes("sotai") || lower.includes("body")) {
+    groups.push(["skin_col0", "skin"]);
+  }
+  if (
+    lower.includes("indoorshoes") ||
+    lower.includes("loafer") ||
+    lower.includes("shoe")
+  ) {
+    groups.push(["indoorshoes_col0", "loafer", "shoe"]);
+  }
+  if (lower.includes("cos") || lower.includes("skirt") || lower.includes("costume")) {
+    groups.push(["cos_col0", "cos", "skirt", "costume"]);
+  }
+  return groups;
+}
+
+function assemblyTextureDomain(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text) {
+    return "unknown";
+  }
+  if (text.includes("eyeshadow")) {
+    return "eyeshadow";
+  }
+  if (
+    text.includes("eyelens") ||
+    (text.includes("eye") && text.includes("lens")) ||
+    text.includes("_lens")
+  ) {
+    return "lens";
+  }
+  if (
+    text.includes("eyeshadow") ||
+    text.includes("eyehighlight") ||
+    text.includes("eye_highlight") ||
+    text.includes("eyehi") ||
+    text.includes("eye_col") ||
+    text.includes(" eye")
+  ) {
+    return "eye";
+  }
+  if (text.includes("brow") || text.includes("face")) {
+    return "face";
+  }
+  if (text.includes("hair")) {
+    return "hair";
+  }
+  if (text.includes("skin")) {
+    return "skin";
+  }
+  if (text.includes("sotai") || text.includes("body")) {
+    return "skin";
+  }
+  if (
+    text.includes("indoorshoes") ||
+    text.includes("loafer") ||
+    text.includes("shoe")
+  ) {
+    return "shoe";
+  }
+  if (text.includes("cos") || text.includes("costume") || text.includes("skirt")) {
+    return "costume";
+  }
+  return "unknown";
+}
+
+function assemblyTextureDomainCompatible(targetDomain, candidateDomain) {
+  if (targetDomain === "unknown" || candidateDomain === "unknown") {
+    return true;
+  }
+  if (targetDomain === candidateDomain) {
+    return true;
+  }
+  if (
+    (targetDomain === "eye" && candidateDomain === "lens") ||
+    (targetDomain === "lens" && candidateDomain === "eye")
+  ) {
+    return true;
+  }
+  if (
+    (targetDomain === "eyeshadow" && candidateDomain === "eye") ||
+    (targetDomain === "eye" && candidateDomain === "eyeshadow")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function assemblyTextureSearchText(candidate) {
+  const materials = Array.isArray(candidate?.materials) ? candidate.materials : [];
+  return [candidate?.label || "", ...materials].join(" ").toLowerCase();
+}
+
+function scoreAssemblyTextureCandidate(candidate, entry, meshName = "") {
+  if (!candidate) {
+    return -1e6;
+  }
+  const plainAvailable = candidate.plainAvailable !== false;
+  const previewReady = candidate.previewReady !== false;
+  if (!plainAvailable) {
+    return -1e6;
+  }
+  if (!previewReady && candidate.previewExportable === false) {
+    return -1e6;
+  }
+  const owners = Array.isArray(candidate.owners) ? candidate.owners : [];
+  const materials = Array.isArray(candidate.materials) ? candidate.materials : [];
+  const role = String(candidate.role || "").trim().toLowerCase();
+  const targetDomain = assemblyTextureDomain(
+    `${entry?.name || ""} ${meshName || ""}`
+  );
+  const candidateDomain = assemblyTextureDomain(
+    `${candidate?.label || ""} ${materials.join(" ")}`
+  );
+  const targetTokens = buildAssemblyTokenSet([
+    entry?.label || "",
+    entry?.name || "",
+    meshName || "",
+  ]);
+  const candidateLabelTokens = buildAssemblyTokenSet(candidate.label || "");
+  const candidateMaterialTokens = buildAssemblyTokenSet(materials);
+  const candidateTokens = new Set([
+    ...candidateLabelTokens,
+    ...candidateMaterialTokens,
+  ]);
+
+  let score = assemblyTextureRoleWeight(role);
+  const ownerMatched = owners.includes(String(entry?.label || ""));
+  if (ownerMatched) {
+    score += 52;
+  }
+
+  const ownerIdentity = assemblyIdentityToken(entry?.label || "");
+  const candidateIdentity = assemblyIdentityToken(candidate?.label || "");
+  if (ownerIdentity && candidateIdentity) {
+    if (ownerIdentity === candidateIdentity) {
+      score += 64;
+    } else if (
+      assemblyIdentityFamily(ownerIdentity) &&
+      assemblyIdentityFamily(ownerIdentity) ===
+        assemblyIdentityFamily(candidateIdentity)
+    ) {
+      score += 42;
+    } else if (
+      assemblyIdentityRoot(ownerIdentity) &&
+      assemblyIdentityRoot(ownerIdentity) ===
+        assemblyIdentityRoot(candidateIdentity)
+    ) {
+      score += 24;
+    } else {
+      score -= 120;
+    }
+  }
+
+  let overlapCount = 0;
+  targetTokens.forEach((token) => {
+    if (candidateLabelTokens.has(token)) {
+      overlapCount += 1;
+      score += token.length >= 4 ? 12 : 7;
+      return;
+    }
+    if (candidateMaterialTokens.has(token)) {
+      overlapCount += 1;
+      score += token.length >= 4 ? 5 : 3;
+    }
+  });
+  if (!ownerMatched && overlapCount === 0) {
+    score -= 40;
+  }
+
+  if (targetDomain !== "unknown" && candidateDomain !== "unknown") {
+    if (assemblyTextureDomainCompatible(targetDomain, candidateDomain)) {
+      if (targetDomain === candidateDomain) {
+        score += 44;
+      } else {
+        score += 12;
+      }
+    } else {
+      score -= 180;
+    }
+  }
+
+  const meshText = String(meshName || entry?.name || "").toLowerCase();
+  const wantsEyeShadow =
+    meshText.includes("eyeshadow") || targetDomain === "eyeshadow";
+  if (wantsEyeShadow) {
+    if (
+      role === "highlight" ||
+      candidateTokens.has("highlight") ||
+      candidateTokens.has("eyesh")
+    ) {
+      score += 132;
+    } else if (role === "albedo") {
+      score -= 118;
+    } else if (role === "lens") {
+      score -= 58;
+    }
+  } else if (targetDomain === "eye") {
+    if (role === "albedo") {
+      score += 18;
+    } else if (role === "highlight") {
+      score -= 26;
+    }
+  } else if (targetDomain === "lens") {
+    if (role === "lens") {
+      score += 86;
+    } else if (role === "albedo") {
+      score -= 74;
+    }
+  }
+
+  const has = (token) => targetTokens.has(token);
+  const cHas = (token) => candidateTokens.has(token);
+  if (has("hair") && cHas("hair")) score += 18;
+  if (has("skin") && cHas("skin")) score += 18;
+  if ((has("cos") || has("costume")) && (cHas("cos") || cHas("costume"))) score += 17;
+  if (has("shoe") && (cHas("shoe") || cHas("loafer") || cHas("indoorshoes"))) score += 18;
+  if (has("brow") && cHas("brow")) score += 18;
+  if (has("eye") && cHas("eye")) score += 18;
+  if (has("face") && cHas("face")) score += 18;
+  if (has("lens") && (role === "lens" || cHas("lens"))) score += 28;
+  if (has("highlight") && (role === "highlight" || cHas("highlight"))) score += 21;
+
+  return score;
+}
+
+function selectAssemblyTextureCandidate(candidates, entry, meshName = "") {
+  if (!Array.isArray(candidates) || !candidates.length || !entry) {
+    return null;
+  }
+  const available = candidates.filter((candidate) => candidate?.plainAvailable !== false);
+  if (!available.length) {
+    return null;
+  }
+  const ownerLabel = String(entry.label || "");
+  const ownerMatchedPool = available.filter((candidate) =>
+    Array.isArray(candidate?.owners) ? candidate.owners.includes(ownerLabel) : false
+  );
+  let pool = ownerMatchedPool.length ? ownerMatchedPool : available;
+  const targetDomain = assemblyTextureDomain(`${entry?.name || ""} ${meshName || ""}`);
+  if (targetDomain !== "unknown") {
+    const domainMatched = pool.filter((candidate) => {
+      const materials = Array.isArray(candidate?.materials) ? candidate.materials : [];
+      const candidateDomain = assemblyTextureDomain(
+        `${candidate?.label || ""} ${materials.join(" ")}`
+      );
+      return assemblyTextureDomainCompatible(targetDomain, candidateDomain);
+    });
+    if (domainMatched.length) {
+      pool = domainMatched;
+    }
+  }
+  const preferReadyForDomain =
+    targetDomain === "eye" || targetDomain === "lens";
+  if (preferReadyForDomain) {
+    const readyPool = pool.filter((candidate) => candidate?.previewReady !== false);
+    if (readyPool.length) {
+      pool = readyPool;
+    }
+  }
+  const ownerIdentity = assemblyIdentityToken(ownerLabel);
+  if (ownerIdentity) {
+    const exactMatched = pool.filter(
+      (candidate) =>
+        assemblyCandidateIdentityState(candidate, ownerIdentity) === "exact"
+    );
+    if (exactMatched.length) {
+      pool = exactMatched;
+    } else {
+      const familyMatched = pool.filter(
+        (candidate) =>
+          assemblyCandidateIdentityState(candidate, ownerIdentity) === "family"
+      );
+      if (familyMatched.length) {
+        pool = familyMatched;
+      } else {
+        const relatedMatched = pool.filter(
+          (candidate) =>
+            assemblyCandidateIdentityState(candidate, ownerIdentity) === "related"
+        );
+        if (relatedMatched.length) {
+          pool = relatedMatched;
+        } else {
+          const nonMismatch = pool.filter(
+            (candidate) =>
+              assemblyCandidateIdentityState(candidate, ownerIdentity) !== "mismatch"
+          );
+          if (nonMismatch.length) {
+            pool = nonMismatch;
+          }
+        }
+      }
+    }
+  }
+  const hints = assemblyTextureHintGroups(`${entry?.name || ""} ${meshName || ""}`);
+
+  const chooseBest = (list) => {
+    let best = null;
+    let bestScore = -1e6;
+    for (const candidate of list) {
+      const score = scoreAssemblyTextureCandidate(candidate, entry, meshName);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+    if (!best) {
+      return null;
+    }
+    const ownerMatched = Array.isArray(best.owners)
+      ? best.owners.includes(ownerLabel)
+      : false;
+    if (bestScore < 20 && !ownerMatched) {
+      return null;
+    }
+    return best;
+  };
+
+  for (const group of hints) {
+    const matched = pool.filter((candidate) => {
+      const text = assemblyTextureSearchText(candidate);
+      return group.some((token) => text.includes(String(token || "").toLowerCase()));
+    });
+    if (matched.length) {
+      const bestHint = chooseBest(matched);
+      if (bestHint) {
+        return bestHint;
+      }
+    }
+  }
+
+  const best = chooseBest(pool);
+  if (!best) {
+    return null;
+  }
+  return best;
+}
 
 function addPreviewDisposer(disposer) {
   if (typeof disposer === "function") {
@@ -285,6 +781,70 @@ function findRigBoneKey(name) {
   return "";
 }
 
+function normalizeAssemblyError(err) {
+  if (!err) {
+    return "";
+  }
+  if (typeof err === "string") {
+    return err.trim();
+  }
+  if (typeof err?.message === "string") {
+    return err.message.trim();
+  }
+  return String(err).trim();
+}
+
+function threeModuleProviders(version) {
+  const v = String(version || "").trim();
+  return [
+    {
+      name: "jsdelivr-esm",
+      THREE: `https://cdn.jsdelivr.net/npm/three@${v}/build/three.module.js/+esm`,
+      OrbitControls:
+        `https://cdn.jsdelivr.net/npm/three@${v}/examples/jsm/controls/OrbitControls.js/+esm`,
+      GLTFLoader:
+        `https://cdn.jsdelivr.net/npm/three@${v}/examples/jsm/loaders/GLTFLoader.js/+esm`,
+      GLTFExporter:
+        `https://cdn.jsdelivr.net/npm/three@${v}/examples/jsm/exporters/GLTFExporter.js/+esm`,
+    },
+    {
+      name: "unpkg-module",
+      THREE: `https://unpkg.com/three@${v}/build/three.module.js?module`,
+      OrbitControls:
+        `https://unpkg.com/three@${v}/examples/jsm/controls/OrbitControls.js?module`,
+      GLTFLoader:
+        `https://unpkg.com/three@${v}/examples/jsm/loaders/GLTFLoader.js?module`,
+      GLTFExporter:
+        `https://unpkg.com/three@${v}/examples/jsm/exporters/GLTFExporter.js?module`,
+    },
+    {
+      name: "esm.sh",
+      THREE: `https://esm.sh/three@${v}`,
+      OrbitControls:
+        `https://esm.sh/three@${v}/examples/jsm/controls/OrbitControls.js`,
+      GLTFLoader:
+        `https://esm.sh/three@${v}/examples/jsm/loaders/GLTFLoader.js`,
+      GLTFExporter:
+        `https://esm.sh/three@${v}/examples/jsm/exporters/GLTFExporter.js`,
+    },
+  ];
+}
+
+async function loadThreeModulesFromProvider(provider) {
+  const [threeMod, controlsMod, loaderMod, exporterMod] = await Promise.all([
+    import(provider.THREE),
+    import(provider.OrbitControls),
+    import(provider.GLTFLoader),
+    import(provider.GLTFExporter),
+  ]);
+  return {
+    THREE: threeMod,
+    OrbitControls: controlsMod.OrbitControls,
+    GLTFLoader: loaderMod.GLTFLoader,
+    GLTFExporter: exporterMod.GLTFExporter,
+  };
+}
+
 async function pollPreviewExportTask(taskId, token) {
   const started = Date.now();
   while (previewExportRunToken === token) {
@@ -393,6 +953,47 @@ function renderParentList(parents) {
     row.appendChild(meta);
     container.appendChild(row);
   });
+}
+
+async function inferPrefabPendingDependencies(dependencies) {
+  const labels = Array.from(
+    new Set(
+      (Array.isArray(dependencies) ? dependencies : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
+  if (!labels.length) {
+    return [];
+  }
+
+  const pending = [];
+  for (const label of labels) {
+    const lowerLabel = label.toLowerCase();
+    if (!lowerLabel.endsWith(".fbx") && !lowerLabel.endsWith(".prefab")) {
+      continue;
+    }
+    try {
+      const data = await App.apiGet(`/api/entry?label=${encodeURIComponent(label)}`);
+      const preview = data?.preview || {};
+      const kind = String(data?.type || "").toLowerCase();
+      const isCandidate = kind === "fbx" || kind === "prefab" || lowerLabel.endsWith(".fbx") || lowerLabel.endsWith(".prefab");
+      if (!isCandidate) {
+        continue;
+      }
+      if (preview.exportable && !preview.available) {
+        pending.push({
+          label,
+          type: data?.type || "",
+          resourceType: Number(data?.resourceType || 0),
+          size: Number(data?.size || 0),
+        });
+      }
+    } catch (err) {
+      // Ignore dependency lookup errors and continue probing other labels.
+    }
+  }
+  return pending;
 }
 
 function fileUrlFromPath(path) {
@@ -927,17 +1528,19 @@ function loadAssemblyPosePreset(presetId) {
 
 async function loadThreeModules() {
   if (!threeModulesPromise) {
-    threeModulesPromise = Promise.all([
-      import("https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"),
-      import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/controls/OrbitControls.js"),
-      import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/loaders/GLTFLoader.js"),
-      import("https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/exporters/GLTFExporter.js"),
-    ]).then(([threeMod, controlsMod, loaderMod, exporterMod]) => ({
-      THREE: threeMod,
-      OrbitControls: controlsMod.OrbitControls,
-      GLTFLoader: loaderMod.GLTFLoader,
-      GLTFExporter: exporterMod.GLTFExporter,
-    }));
+    const version = "0.164.1";
+    threeModulesPromise = (async () => {
+      const providers = threeModuleProviders(version);
+      const errors = [];
+      for (const provider of providers) {
+        try {
+          return await loadThreeModulesFromProvider(provider);
+        } catch (err) {
+          errors.push(`${provider.name}: ${normalizeAssemblyError(err)}`);
+        }
+      }
+      throw new Error(errors.join(" | "));
+    })();
   }
   return threeModulesPromise;
 }
@@ -947,6 +1550,9 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
   let rafId = 0;
   let resizeOff = () => {};
   let cleanupRenderer = () => {};
+  const textureCandidates = Array.isArray(hooks?.textureCandidates)
+    ? hooks.textureCandidates.filter((item) => item && item.label)
+    : [];
 
   loadThreeModules()
     .then(({ THREE, OrbitControls, GLTFLoader, GLTFExporter }) => {
@@ -962,11 +1568,24 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
       if ("outputColorSpace" in renderer && "SRGBColorSpace" in THREE) {
         renderer.outputColorSpace = THREE.SRGBColorSpace;
       }
+      if ("toneMapping" in renderer && "ACESFilmicToneMapping" in THREE) {
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      }
+      if ("toneMappingExposure" in renderer) {
+        renderer.toneMappingExposure = 1.12;
+      }
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       viewport.innerHTML = "";
       viewport.appendChild(renderer.domElement);
+      renderer.domElement.style.width = "100%";
+      renderer.domElement.style.height = "100%";
+      renderer.domElement.style.display = "block";
+      if (typeof renderer.setClearColor === "function") {
+        renderer.setClearColor(0xeef2f8, 1);
+      }
 
       const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xeef2f8);
       const camera = new THREE.PerspectiveCamera(44, 1, 0.01, 5000);
       camera.position.set(1.2, 1.1, 2.4);
 
@@ -974,14 +1593,19 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
 
-      const hemi = new THREE.HemisphereLight(0xf7fbff, 0x5f6d7b, 1.08);
+      const hemi = new THREE.HemisphereLight(0xffffff, 0xb6c5d7, 1.24);
       scene.add(hemi);
-      const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
+      const ambient = new THREE.AmbientLight(0xffffff, 0.56);
+      scene.add(ambient);
+      const keyLight = new THREE.DirectionalLight(0xffffff, 1.24);
       keyLight.position.set(3, 6, 4);
       scene.add(keyLight);
-      const fillLight = new THREE.DirectionalLight(0x86a2c4, 0.45);
+      const fillLight = new THREE.DirectionalLight(0x9bb6d4, 0.72);
       fillLight.position.set(-4, 2.5, -3);
       scene.add(fillLight);
+      const rimLight = new THREE.DirectionalLight(0xffffff, 0.34);
+      rimLight.position.set(0.5, 2.8, -5);
+      scene.add(rimLight);
 
       const root = new THREE.Group();
       scene.add(root);
@@ -995,6 +1619,9 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
       scene.add(grid);
 
       const bindPoseMap = new Map();
+      const textureLoader = new THREE.TextureLoader();
+      const textureCache = new Map();
+      const texturePrepareCache = new Map();
       let latestRigInfo = {
         available: false,
         profiles: [],
@@ -1004,6 +1631,278 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
         humanoid: false,
       };
       let activePosePreset = "reset";
+
+      const loadTextureFromUrl = (url) =>
+        new Promise((resolve) => {
+          textureLoader.load(
+            url,
+            (texture) => {
+              if (!texture) {
+                resolve(null);
+                return;
+              }
+              texture.flipY = false;
+              if ("colorSpace" in texture && "SRGBColorSpace" in THREE) {
+                texture.colorSpace = THREE.SRGBColorSpace;
+              }
+              if ("RepeatWrapping" in THREE) {
+                texture.wrapS = THREE.RepeatWrapping;
+                texture.wrapT = THREE.RepeatWrapping;
+              }
+              if ("LinearFilter" in THREE) {
+                texture.magFilter = THREE.LinearFilter;
+              }
+              if ("LinearMipmapLinearFilter" in THREE) {
+                texture.minFilter = THREE.LinearMipmapLinearFilter;
+              }
+              if (renderer?.capabilities && typeof renderer.capabilities.getMaxAnisotropy === "function") {
+                texture.anisotropy = Math.min(
+                  8,
+                  Math.max(1, renderer.capabilities.getMaxAnisotropy())
+                );
+              }
+              texture.needsUpdate = true;
+              resolve(texture);
+            },
+            undefined,
+            () => resolve(null)
+          );
+        });
+
+      const ensureAssemblyTexturePreview = async (label, force = false) => {
+        const key = String(label || "").trim();
+        if (!key) {
+          return false;
+        }
+        const cacheKey = force ? `${key}::force` : key;
+        if (texturePrepareCache.has(cacheKey)) {
+          return texturePrepareCache.get(cacheKey);
+        }
+        const promise = (async () => {
+          try {
+            const before = await App.apiGet(
+              `/api/entry?label=${encodeURIComponent(key)}`
+            );
+            if (before?.preview?.available && !force) {
+              return true;
+            }
+            if (!before?.preview?.exportable) {
+              return Boolean(before?.preview?.available);
+            }
+            const response = await fetch(
+              `/api/entry/preview/export?label=${encodeURIComponent(key)}&force=${
+                force ? "1" : "0"
+              }`,
+              {
+                method: "POST",
+                headers: { Accept: "application/json" },
+              }
+            );
+            if (!response.ok) {
+              return false;
+            }
+            const payload = await response.json();
+            const taskId = payload?.task?.id;
+            if (!taskId) {
+              return false;
+            }
+            await pollPreviewExportTaskSnapshot(taskId);
+            const after = await App.apiGet(
+              `/api/entry?label=${encodeURIComponent(key)}`
+            );
+            return Boolean(after?.preview?.available);
+          } catch (err) {
+            return false;
+          }
+        })();
+        texturePrepareCache.set(cacheKey, promise);
+        return promise;
+      };
+
+      const loadAssemblyTexture = async (label) => {
+        const key = String(label || "").trim();
+        if (!key) {
+          return null;
+        }
+        if (textureCache.has(key)) {
+          return textureCache.get(key);
+        }
+        const promise = (async () => {
+          const previewUrl = previewItemUrl(key, "");
+          let texture = await loadTextureFromUrl(previewUrl);
+          if (texture) {
+            return texture;
+          }
+
+          const repaired = await ensureAssemblyTexturePreview(key, true);
+          if (!repaired) {
+            const prepared = await ensureAssemblyTexturePreview(key, false);
+            if (!prepared) {
+              return loadTextureFromUrl(
+                `/api/entry/plain?label=${encodeURIComponent(key)}`
+              );
+            }
+          }
+
+          texture = await loadTextureFromUrl(previewUrl);
+          if (texture) {
+            return texture;
+          }
+          return loadTextureFromUrl(
+            `/api/entry/plain?label=${encodeURIComponent(key)}`
+          );
+        })();
+        textureCache.set(key, promise);
+        return promise;
+      };
+
+      const applyEyeLayerMaterialState = (node, material, textureRole = "") => {
+        if (!node || !material) {
+          return;
+        }
+        const meshName = String(node.name || "").toLowerCase();
+        const role = String(textureRole || "").toLowerCase();
+        const isLensMesh =
+          meshName.includes("eyelens") ||
+          (meshName.includes("eye") && meshName.includes("lens")) ||
+          role === "lens";
+        const isEyeMesh =
+          meshName.includes("eye") &&
+          !meshName.includes("eyelens") &&
+          !meshName.includes("eyeshadow");
+
+        if (isEyeMesh) {
+          node.renderOrder = Math.max(Number(node.renderOrder) || 0, 26);
+          if ("depthTest" in material) {
+            material.depthTest = true;
+          }
+          if ("depthWrite" in material) {
+            material.depthWrite = true;
+          }
+          if ("polygonOffset" in material) {
+            material.polygonOffset = true;
+            material.polygonOffsetFactor = 1;
+            material.polygonOffsetUnits = 1;
+          }
+        }
+
+        if (isLensMesh) {
+          node.renderOrder = Math.max(Number(node.renderOrder) || 0, 34);
+          if ("transparent" in material) {
+            material.transparent = true;
+          }
+          if ("opacity" in material) {
+            const opacity = Number.isFinite(material.opacity) ? material.opacity : 1;
+            material.opacity = Math.min(opacity, 0.42);
+          }
+          if ("depthTest" in material) {
+            material.depthTest = true;
+          }
+          if ("depthWrite" in material) {
+            material.depthWrite = false;
+          }
+          if ("blending" in material && "NormalBlending" in THREE) {
+            material.blending = THREE.NormalBlending;
+          }
+          if ("polygonOffset" in material) {
+            material.polygonOffset = true;
+            material.polygonOffsetFactor = -2;
+            material.polygonOffsetUnits = -2;
+          }
+          if ("alphaTest" in material) {
+            const alpha = Number.isFinite(material.alphaTest) ? material.alphaTest : 0;
+            material.alphaTest = Math.max(alpha, 0.02);
+          }
+        }
+      };
+
+      const applyAssemblyTextures = async (entry, object) => {
+        if (!entry || !object || !textureCandidates.length) {
+          return;
+        }
+        const jobs = [];
+        object.traverse((node) => {
+          if (!node || !node.isMesh || !node.visible) {
+            return;
+          }
+          const chosen = selectAssemblyTextureCandidate(
+            textureCandidates,
+            entry,
+            node.name || entry.name || ""
+          );
+          if (!chosen || !chosen.label) {
+            return;
+          }
+          jobs.push(
+            loadAssemblyTexture(chosen.label).then((texture) => {
+              if (!texture) {
+                return;
+              }
+              const materials = Array.isArray(node.material)
+                ? node.material
+                : [node.material];
+              materials.forEach((material, idx) => {
+                if (!material) {
+                  return;
+                }
+                if ("map" in material) {
+                  material.map = texture;
+                  if (material.color && typeof material.color.set === "function") {
+                    material.color.set(0xffffff);
+                  }
+                  if ("metalness" in material) {
+                    material.metalness = 0;
+                  }
+                  if ("roughness" in material) {
+                    material.roughness = Math.min(
+                      0.92,
+                      Number.isFinite(material.roughness) ? material.roughness : 0.92
+                    );
+                  }
+                  if ("emissiveIntensity" in material) {
+                    material.emissiveIntensity = Math.max(
+                      0.06,
+                      Number.isFinite(material.emissiveIntensity)
+                        ? material.emissiveIntensity
+                        : 0.06
+                    );
+                  }
+                  material.side = THREE.DoubleSide;
+                  applyEyeLayerMaterialState(node, material, chosen.role);
+                  material.needsUpdate = true;
+                  return;
+                }
+
+                const fallback = new THREE.MeshStandardMaterial({
+                  color: 0xffffff,
+                  map: texture,
+                  metalness: 0,
+                  roughness: 0.88,
+                  side: material.side,
+                });
+                fallback.transparent = Boolean(material.transparent);
+                if (Number.isFinite(material.opacity)) {
+                  fallback.opacity = material.opacity;
+                }
+                fallback.side = THREE.DoubleSide;
+                if (node.isSkinnedMesh && "skinning" in fallback) {
+                  fallback.skinning = true;
+                }
+                if (Array.isArray(node.material)) {
+                  node.material[idx] = fallback;
+                } else {
+                  node.material = fallback;
+                }
+                applyEyeLayerMaterialState(node, fallback, chosen.role);
+              });
+            })
+          );
+        });
+        if (jobs.length) {
+          await Promise.allSettled(jobs);
+          object.updateMatrixWorld(true);
+        }
+      };
 
       const resize = () => {
         if (disposed) {
@@ -1025,6 +1924,8 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
         window.addEventListener("resize", resize);
         resizeOff = () => window.removeEventListener("resize", resize);
       }
+      requestAnimationFrame(resize);
+      setTimeout(resize, 140);
 
       const fitCameraToVisible = () => {
         const box = new THREE.Box3();
@@ -1056,7 +1957,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
         grid.position.y = box.min.y;
       };
 
-      const updateStatus = (loaded, failed, done = false) => {
+      const updateStatus = (loaded, failed, done = false, failureReason = "") => {
         const total = entries.length;
         if (!done) {
           statusEl.textContent = I18n.t("view.prefabAssemblyLoading", {
@@ -1066,7 +1967,10 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
           return;
         }
         if (loaded === 0 || failed === total) {
-          statusEl.textContent = I18n.t("view.prefabAssemblyFailed");
+          const reason = normalizeAssemblyError(failureReason);
+          statusEl.textContent = reason
+            ? `${I18n.t("view.prefabAssemblyFailed")} (${reason})`
+            : I18n.t("view.prefabAssemblyFailed");
           return;
         }
         if (failed > 0) {
@@ -1270,6 +2174,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
       const loadAll = async () => {
         let loaded = 0;
         let failed = 0;
+        let firstFailureReason = "";
         updateStatus(loaded, failed, false);
 
         for (const entry of entries) {
@@ -1295,6 +2200,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
             object.visible = Boolean(entry.enabled);
             root.add(object);
             entry.object = object;
+            await applyAssemblyTextures(entry, object);
             loaded += 1;
             if (entry.row) {
               entry.row.classList.add("loaded");
@@ -1302,14 +2208,21 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
             refreshRigInfo();
           } catch (err) {
             failed += 1;
+            if (!firstFailureReason) {
+              firstFailureReason = normalizeAssemblyError(err);
+            }
             if (entry.row) {
               entry.row.classList.add("failed");
+              const text = normalizeAssemblyError(err);
+              if (text) {
+                entry.row.title = text;
+              }
             }
           }
           updateStatus(loaded, failed, false);
           fitCameraToVisible();
         }
-        updateStatus(loaded, failed, true);
+        updateStatus(loaded, failed, true, firstFailureReason);
         refreshRigInfo();
       };
 
@@ -1337,9 +2250,12 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
         }
       };
     })
-    .catch(() => {
+    .catch((err) => {
       if (!disposed) {
-        statusEl.textContent = I18n.t("view.prefabAssemblyFailed");
+        const reason = normalizeAssemblyError(err);
+        statusEl.textContent = reason
+          ? `${I18n.t("view.prefabAssemblyFailed")} (${reason})`
+          : I18n.t("view.prefabAssemblyFailed");
       }
       if (hooks.onRigUpdate) {
         hooks.onRigUpdate({
@@ -1364,7 +2280,7 @@ function mountPrefabAssemblyViewer(viewport, statusEl, entries, rootLabel, hooks
   };
 }
 
-function createPrefabAssemblySection(assembly, rootLabel) {
+function createPrefabAssemblySection(assembly, rootLabel, dependencies = []) {
   const section = document.createElement("section");
   section.className = "prefab-section prefab-assembly";
 
@@ -1454,16 +2370,19 @@ function createPrefabAssemblySection(assembly, rootLabel) {
   const components = Array.isArray(assembly?.components)
     ? assembly.components.filter((item) => item && (item.label || rootLabel))
     : [];
-  const pending = Array.isArray(assembly?.pendingDependencies)
+  const dependencyList = Array.isArray(dependencies) ? dependencies : [];
+  const textureCandidates = Array.isArray(assembly?.textureCandidates)
+    ? assembly.textureCandidates.filter((item) => item && item.label)
+    : [];
+  const missingTextureDeps = Array.isArray(assembly?.missingTextureDependencies)
+    ? assembly.missingTextureDependencies.filter((item) => item)
+    : [];
+  const pendingTextureDeps = Array.isArray(assembly?.pendingTextureDependencies)
+    ? assembly.pendingTextureDependencies.filter((item) => item && item.label)
+    : [];
+  let pending = Array.isArray(assembly?.pendingDependencies)
     ? assembly.pendingDependencies.filter((item) => item && item.label)
     : [];
-  if (!components.length) {
-    const empty = document.createElement("div");
-    empty.className = "prefab-empty";
-    empty.textContent = I18n.t("view.prefabAssemblyNoComponents");
-    section.appendChild(empty);
-    return section;
-  }
 
   const setAssemblyExportProgress = ({ visible, percent, text, state }) => {
     if (!visible) {
@@ -1485,82 +2404,143 @@ function createPrefabAssemblySection(assembly, rootLabel) {
     exportBar.setAttribute("aria-valuenow", String(Math.round(safe)));
   };
 
-  if (pending.length) {
-    prepareButton.classList.remove("d-none");
-    prepareButton.disabled = false;
-    prepareButton.textContent = I18n.t("view.prefabAssemblyPrepareButton", {
-      count: String(pending.length),
-    });
-    pendingHint.classList.remove("d-none");
-    pendingHint.textContent = I18n.t("view.prefabAssemblyPending", {
-      count: String(pending.length),
-    });
-  } else {
+  const refreshPendingControls = () => {
+    if (pending.length) {
+      prepareButton.classList.remove("d-none");
+      prepareButton.disabled = false;
+      prepareButton.textContent = I18n.t("view.prefabAssemblyPrepareButton", {
+        count: String(pending.length),
+      });
+      pendingHint.classList.remove("d-none");
+      pendingHint.textContent = I18n.t("view.prefabAssemblyPending", {
+        count: String(pending.length),
+      });
+      return;
+    }
+    prepareButton.classList.add("d-none");
     pendingHint.classList.add("d-none");
+  };
+  refreshPendingControls();
+
+  if (!pending.length && dependencyList.length) {
+    pendingHint.classList.remove("d-none");
+    pendingHint.textContent = I18n.t("view.prefabAssemblyPendingDetecting");
+    inferPrefabPendingDependencies(dependencyList).then((items) => {
+      if (!Array.isArray(items) || !items.length) {
+        pendingHint.classList.add("d-none");
+        return;
+      }
+      pending = items;
+      refreshPendingControls();
+    });
   }
 
-  const layout = document.createElement("div");
-  layout.className = "prefab-assembly-layout";
+  if (textureCandidates.length || missingTextureDeps.length || pendingTextureDeps.length) {
+    const textureHint = document.createElement("div");
+    textureHint.className = "prefab-assembly-texture";
+    const lines = [];
+    if (textureCandidates.length) {
+      lines.push(
+        I18n.t("view.prefabAssemblyTextureHint", {
+          count: String(textureCandidates.length),
+        })
+      );
+    }
+    if (missingTextureDeps.length) {
+      lines.push(
+        I18n.t("view.prefabAssemblyTextureMissing", {
+          count: String(missingTextureDeps.length),
+        })
+      );
+    }
+    if (pendingTextureDeps.length) {
+      lines.push(
+        I18n.t("view.prefabAssemblyTexturePending", {
+          count: String(pendingTextureDeps.length),
+        })
+      );
+    }
+    textureHint.textContent = lines.join(" ");
+    section.appendChild(textureHint);
+  }
 
-  const viewportShell = document.createElement("div");
-  viewportShell.className = "prefab-assembly-viewport-shell";
-  const viewport = document.createElement("div");
-  viewport.className = "prefab-assembly-viewport";
-  const status = document.createElement("div");
-  status.className = "prefab-assembly-status";
-  status.textContent = I18n.t("view.prefabAssemblyLoading", {
-    loaded: "0",
-    total: String(components.length),
-  });
-  viewportShell.appendChild(viewport);
-  viewportShell.appendChild(status);
-  layout.appendChild(viewportShell);
+  let viewport = null;
+  let status = null;
+  let entries = [];
+  if (components.length) {
+    const layout = document.createElement("div");
+    layout.className = "prefab-assembly-layout";
 
-  const list = document.createElement("div");
-  list.className = "prefab-assembly-list";
+    const viewportShell = document.createElement("div");
+    viewportShell.className = "prefab-assembly-viewport-shell";
+    viewport = document.createElement("div");
+    viewport.className = "prefab-assembly-viewport";
+    status = document.createElement("div");
+    status.className = "prefab-assembly-status";
+    status.textContent = I18n.t("view.prefabAssemblyLoading", {
+      loaded: "0",
+      total: String(components.length),
+    });
+    viewportShell.appendChild(viewport);
+    viewportShell.appendChild(status);
+    layout.appendChild(viewportShell);
 
-  const entries = components.map((component, index) => {
-    const row = document.createElement("label");
-    row.className = "prefab-assembly-item";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = true;
-    checkbox.className = "prefab-assembly-checkbox";
+    const list = document.createElement("div");
+    list.className = "prefab-assembly-list";
 
-    const copy = document.createElement("div");
-    copy.className = "prefab-assembly-copy";
-    const name = document.createElement("div");
-    name.className = "prefab-assembly-name";
-    name.textContent =
-      component.name || `${I18n.t("view.prefabItem")} ${index + 1}`;
-    const meta = document.createElement("div");
-    meta.className = "prefab-assembly-meta";
-    const sourceText =
-      component.source === "self"
-        ? I18n.t("view.prefabAssemblyFromSelf")
-        : I18n.t("view.prefabAssemblyFromDependency");
-    meta.textContent = `${sourceText} · ${component.label || rootLabel}`;
+    entries = components.map((component, index) => {
+      const row = document.createElement("label");
+      row.className = "prefab-assembly-item";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = true;
+      checkbox.className = "prefab-assembly-checkbox";
 
-    copy.appendChild(name);
-    copy.appendChild(meta);
-    row.appendChild(checkbox);
-    row.appendChild(copy);
-    list.appendChild(row);
+      const copy = document.createElement("div");
+      copy.className = "prefab-assembly-copy";
+      const name = document.createElement("div");
+      name.className = "prefab-assembly-name";
+      name.textContent =
+        component.name || `${I18n.t("view.prefabItem")} ${index + 1}`;
+      const meta = document.createElement("div");
+      meta.className = "prefab-assembly-meta";
+      const sourceText =
+        component.source === "self"
+          ? I18n.t("view.prefabAssemblyFromSelf")
+          : I18n.t("view.prefabAssemblyFromDependency");
+      meta.textContent = `${sourceText} · ${component.label || rootLabel}`;
 
-    return {
-      label: component.label || rootLabel,
-      itemId: component.itemId || "",
-      name: component.name || "",
-      type: component.type || "",
-      source: component.source || "",
-      enabled: true,
-      object: null,
-      checkbox,
-      row,
-    };
-  });
-  layout.appendChild(list);
-  section.appendChild(layout);
+      copy.appendChild(name);
+      copy.appendChild(meta);
+      row.appendChild(checkbox);
+      row.appendChild(copy);
+      list.appendChild(row);
+
+      return {
+        label: component.label || rootLabel,
+        itemId: component.itemId || "",
+        name: component.name || "",
+        type: component.type || "",
+        source: component.source || "",
+        enabled: true,
+        object: null,
+        checkbox,
+        row,
+      };
+    });
+    layout.appendChild(list);
+    section.appendChild(layout);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "prefab-empty";
+    empty.textContent = I18n.t("view.prefabAssemblyNoComponents");
+    section.appendChild(empty);
+    poseApplyButton.disabled = true;
+    poseApplyButton.classList.add("d-none");
+    exportButton.disabled = true;
+    exportButton.classList.add("d-none");
+    rigInfo.textContent = I18n.t("view.prefabRigNone");
+  }
 
   let viewerApi = null;
   let rigAvailable = false;
@@ -1729,31 +2709,34 @@ function createPrefabAssemblySection(assembly, rootLabel) {
     section.appendChild(footer);
   }
 
-  addPreviewDisposer(
-    mountPrefabAssemblyViewer(viewport, status, entries, rootLabel, {
-      onReady(api) {
-        viewerApi = api;
-        exportButton.disabled = false;
-      },
-      onRigUpdate(info) {
-        rigAvailable = Boolean(info?.available);
-        if (!rigAvailable) {
-          rigInfo.textContent = I18n.t("view.prefabRigNone");
-          poseApplyButton.disabled = true;
-          return;
-        }
-        poseApplyButton.disabled = false;
-        const payload = {
-          skeletons: String(info.skeletonCount || 0),
-          bones: String(info.totalBones || 0),
-          mapped: String(info.mappedJointCount || 0),
-        };
-        rigInfo.textContent = info.humanoid
-          ? I18n.t("view.prefabRigHumanoid", payload)
-          : I18n.t("view.prefabRigGeneric", payload);
-      },
-    })
-  );
+  if (components.length && viewport && status) {
+    addPreviewDisposer(
+      mountPrefabAssemblyViewer(viewport, status, entries, rootLabel, {
+        textureCandidates,
+        onReady(api) {
+          viewerApi = api;
+          exportButton.disabled = false;
+        },
+        onRigUpdate(info) {
+          rigAvailable = Boolean(info?.available);
+          if (!rigAvailable) {
+            rigInfo.textContent = I18n.t("view.prefabRigNone");
+            poseApplyButton.disabled = true;
+            return;
+          }
+          poseApplyButton.disabled = false;
+          const payload = {
+            skeletons: String(info.skeletonCount || 0),
+            bones: String(info.totalBones || 0),
+            mapped: String(info.mappedJointCount || 0),
+          };
+          rigInfo.textContent = info.humanoid
+            ? I18n.t("view.prefabRigHumanoid", payload)
+            : I18n.t("view.prefabRigGeneric", payload);
+        },
+      })
+    );
+  }
   return section;
 }
 
@@ -1916,12 +2899,16 @@ function renderPrefabPreview(container, preview, label) {
   wrapper.className = "prefab-preview";
 
   const meta = preview.meta || {};
+  const hasAssembly = Boolean(meta.assembly && meta.assembly.available);
 
   const stage = document.createElement("div");
   stage.className = "prefab-stage";
+  const primaryBlock = document.createElement("div");
+  primaryBlock.className = "prefab-primary-block";
+  stage.appendChild(primaryBlock);
   const media = document.createElement("div");
   media.className = "prefab-media";
-  stage.appendChild(media);
+  primaryBlock.appendChild(media);
 
   const items = Array.isArray(preview.items)
     ? preview.items
@@ -1960,9 +2947,10 @@ function renderPrefabPreview(container, preview, label) {
   }
 
   let activeIndex = 0;
+  let primaryRendered = false;
   const mediaTitle = document.createElement("div");
   mediaTitle.className = "prefab-media-title";
-  stage.appendChild(mediaTitle);
+  primaryBlock.appendChild(mediaTitle);
 
   const renderActiveItem = () => {
     media.innerHTML = "";
@@ -1980,10 +2968,20 @@ function renderPrefabPreview(container, preview, label) {
     }
     media.appendChild(node);
   };
-  renderActiveItem();
+  const ensurePrimaryRendered = () => {
+    if (primaryRendered) {
+      return;
+    }
+    renderActiveItem();
+    primaryRendered = true;
+  };
+  if (!hasAssembly) {
+    ensurePrimaryRendered();
+  }
 
+  let switcher = null;
   if (items.length > 1) {
-    const switcher = document.createElement("div");
+    switcher = document.createElement("div");
     switcher.className = "prefab-switcher";
     items.forEach((item, index) => {
       const button = document.createElement("button");
@@ -1998,15 +2996,39 @@ function renderPrefabPreview(container, preview, label) {
         switcher
           .querySelectorAll(".prefab-switch-btn")
           .forEach((el, idx) => el.classList.toggle("active", idx === index));
+        ensurePrimaryRendered();
         renderActiveItem();
       };
       switcher.appendChild(button);
     });
-    stage.appendChild(switcher);
+    primaryBlock.appendChild(switcher);
   }
 
-  if (meta.assembly && meta.assembly.available) {
-    stage.appendChild(createPrefabAssemblySection(meta.assembly, label));
+  if (hasAssembly) {
+    primaryBlock.classList.add("d-none");
+    const togglePrimaryButton = document.createElement("button");
+    togglePrimaryButton.type = "button";
+    togglePrimaryButton.className = "btn btn-outline-dark btn-sm prefab-primary-toggle";
+    const syncPrimaryToggleLabel = () => {
+      const hidden = primaryBlock.classList.contains("d-none");
+      togglePrimaryButton.textContent = hidden
+        ? I18n.t("view.prefabPrimaryShow")
+        : I18n.t("view.prefabPrimaryHide");
+    };
+    togglePrimaryButton.onclick = () => {
+      const hidden = primaryBlock.classList.contains("d-none");
+      primaryBlock.classList.toggle("d-none", !hidden);
+      if (hidden) {
+        ensurePrimaryRendered();
+      }
+      syncPrimaryToggleLabel();
+    };
+    syncPrimaryToggleLabel();
+    stage.appendChild(togglePrimaryButton);
+
+    stage.appendChild(
+      createPrefabAssemblySection(meta.assembly, label, meta.dependencies || [])
+    );
   }
 
   const panel = document.createElement("aside");
