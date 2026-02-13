@@ -8,6 +8,7 @@ let state = {
   character: [],
   tags: [],
   songs: [],
+  videoSources: [],
   namingPrefixes: [],
   namingSeries: [],
   namingCodeCharacters: [],
@@ -36,12 +37,25 @@ let namingFilterConfig = {
   codeCharacters: [],
   variants: [],
   songs: [],
+  videoSources: [],
 };
 let filterCountCache = {
   media: new Map(),
   character: new Map(),
   tags: new Map(),
 };
+const filterPanelDefaults = {
+  media: { collapsed: false, searchable: false, limit: 20 },
+  character: { collapsed: false, searchable: false, limit: 20 },
+  tags: { collapsed: false, searchable: true, limit: 32 },
+  songs: { collapsed: true, searchable: true, limit: 28 },
+  videoSources: { collapsed: false, searchable: true, limit: 18 },
+  namingPrefixes: { collapsed: true, searchable: true, limit: 24 },
+  namingSeries: { collapsed: true, searchable: true, limit: 42 },
+  namingCodeCharacters: { collapsed: true, searchable: true, limit: 24 },
+  namingVariants: { collapsed: true, searchable: true, limit: 24 },
+};
+let filterPanelState = {};
 
 const characterCodeMap = {
   "1021": { key: "kozue", name: "Kozue" },
@@ -94,9 +108,20 @@ let costumeSeriesLoadPromise = null;
 let costumeModelHints = {};
 let musicMetaByMusicId = {};
 let musicMetaBySoundId = {};
+let mediaMetaByLabel = {};
 
 const bgmSoundIdLabelRE = /^bgm_(?:live|preview)_(\d+)\.(?:acb|awb)$/i;
 const lyricVideoMusicIdLabelRE = /^music_lyric_video_(\d+)\.usm$/i;
+const videoSourceLabelKeys = {
+  advDigest: "search.videoSource.advDigest",
+  tutorial: "search.videoSource.tutorial",
+  memberIntro: "search.videoSource.memberIntro",
+  fesLive: "search.videoSource.fesLive",
+  styleMovie: "search.videoSource.styleMovie",
+  memberVoice: "search.videoSource.memberVoice",
+  styleVoice: "search.videoSource.styleVoice",
+  cardGetMovie: "search.videoSource.cardGetMovie",
+};
 
 const namingPrefixHints = {
   "3d_costume": "3D Costume",
@@ -343,6 +368,10 @@ function entryTraits(entry) {
     soundId: "",
     songTitle: "",
     songAliases: [],
+    videoSource: "",
+    videoMetaId: "",
+    videoTitle: "",
+    videoAliases: [],
   };
 
   const costumeMatch = normalized.match(/^3d_costume_(\d{10})$/);
@@ -398,6 +427,16 @@ function entryTraits(entry) {
       : [];
   }
 
+  const mediaMeta = resolveMediaMetaByLabel(label);
+  if (mediaMeta) {
+    traits.videoSource = String(mediaMeta.source || "").trim();
+    traits.videoMetaId = String(mediaMeta.id || "").trim();
+    traits.videoTitle = String(mediaMeta.title || "").trim();
+    traits.videoAliases = Array.isArray(mediaMeta.aliases)
+      ? mediaMeta.aliases.filter(Boolean)
+      : [];
+  }
+
   entry._traits = traits;
   return traits;
 }
@@ -442,6 +481,19 @@ function entrySearchText(entry) {
     }
     if (Array.isArray(traits.songAliases) && traits.songAliases.length) {
       parts.push(traits.songAliases.join(" "));
+    }
+    if (traits.videoSource) {
+      parts.push(traits.videoSource);
+      parts.push(formatVideoSourceLabel(traits.videoSource));
+    }
+    if (traits.videoMetaId) {
+      parts.push(traits.videoMetaId);
+    }
+    if (traits.videoTitle) {
+      parts.push(traits.videoTitle);
+    }
+    if (Array.isArray(traits.videoAliases) && traits.videoAliases.length) {
+      parts.push(traits.videoAliases.join(" "));
     }
     if (traits.modelLabel) {
       parts.push(traits.modelLabel);
@@ -681,6 +733,101 @@ function formatSongLabel(musicId) {
   return `${title} (${normalized})`;
 }
 
+function normalizeLabelKey(raw) {
+  return String(raw || "").trim().toLowerCase();
+}
+
+function resolveMediaMetaByLabel(label) {
+  const key = normalizeLabelKey(label);
+  if (!key) {
+    return null;
+  }
+  return mediaMetaByLabel[key] || null;
+}
+
+function toIntString(raw) {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return "";
+  }
+  const parsed = Number.parseInt(text, 10);
+  if (!Number.isFinite(parsed)) {
+    return text;
+  }
+  return String(parsed);
+}
+
+function formatVideoSourceLabel(source) {
+  const key = videoSourceLabelKeys[source];
+  if (!key) {
+    return source;
+  }
+  const translated = I18n.t(key);
+  return translated === key ? source : translated;
+}
+
+function getFilterPanelState(group) {
+  const key = String(group || "").trim();
+  if (!key) {
+    return {
+      collapsed: false,
+      searchable: false,
+      limit: 24,
+      query: "",
+      showAll: false,
+    };
+  }
+  if (!filterPanelState[key]) {
+    const defaults = filterPanelDefaults[key] || {};
+    filterPanelState[key] = {
+      collapsed: Boolean(defaults.collapsed),
+      searchable: Boolean(defaults.searchable),
+      limit: Number(defaults.limit) > 0 ? Number(defaults.limit) : 24,
+      query: "",
+      showAll: false,
+    };
+  }
+  return filterPanelState[key];
+}
+
+function resetFilterPanelSearchState() {
+  Object.keys(filterPanelState).forEach((group) => {
+    const panel = filterPanelState[group];
+    if (!panel) {
+      return;
+    }
+    panel.query = "";
+    panel.showAll = false;
+  });
+}
+
+function deriveVoiceAssetLabels(voiceName) {
+  const raw = String(voiceName || "").trim().toLowerCase();
+  if (!raw) {
+    return [];
+  }
+  const result = new Set();
+  const addBase = (base) => {
+    const text = String(base || "").trim().toLowerCase();
+    if (!text) {
+      return;
+    }
+    result.add(`${text}.acb`);
+    result.add(`${text}.awb`);
+  };
+  addBase(raw);
+  addBase(raw.replace(/_\d{4,}$/, ""));
+  const memberMatch = raw.match(/^(vo_(?:chara|title)_m\d{4})_/);
+  if (memberMatch) {
+    addBase(memberMatch[1]);
+  }
+  const styleMatch = raw.match(/^(vo_card_\d{7})_/);
+  if (styleMatch) {
+    addBase(styleMatch[1]);
+  }
+  return Array.from(result);
+}
+
 function loadCostumeSeriesHints() {
   if (costumeSeriesLoadPromise) {
     return costumeSeriesLoadPromise;
@@ -701,6 +848,30 @@ function loadCostumeSeriesHints() {
     fetch("/api/masterdata/file?name=LiveMusic")
       .then((res) => (res.ok ? res.text() : ""))
       .catch(() => ""),
+    fetch("/api/masterdata/file?name=AdvStoryDigestMovies")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=TutorialSchoolIdolStageMovies")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=MemberMovies")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=MemberVoices")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=LiveMovies")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=StyleMovies")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=StyleVoices")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=CardGetMovieSettings")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
   ])
     .then(
       ([
@@ -709,6 +880,14 @@ function loadCostumeSeriesHints() {
         charactersText,
         musicsText,
         liveMusicText,
+        advStoryDigestMoviesText,
+        tutorialSchoolIdolStageMoviesText,
+        memberMoviesText,
+        memberVoicesText,
+        liveMoviesText,
+        styleMoviesText,
+        styleVoicesText,
+        cardGetMovieSettingsText,
       ]) => {
       const nextSeriesHints = { ...defaultCostumeSeriesHints };
       if (costumesText) {
@@ -814,8 +993,266 @@ function loadCostumeSeriesHints() {
           }
         });
       }
+
+      const nextMediaMetaByLabel = {};
+      const upsertMediaMeta = (assetLabel, source, id, title, aliases = []) => {
+        const key = normalizeLabelKey(assetLabel);
+        if (!key) {
+          return;
+        }
+        const existing = nextMediaMetaByLabel[key] || {
+          source: "",
+          id: "",
+          title: "",
+          aliases: [],
+        };
+        if (!existing.source && source) {
+          existing.source = source;
+        }
+        if (!existing.id && id) {
+          existing.id = String(id);
+        }
+        if (!existing.title && title) {
+          existing.title = String(title).trim();
+        }
+        const aliasSet = new Set(existing.aliases || []);
+        if (existing.title) {
+          aliasSet.add(existing.title);
+        }
+        if (existing.id) {
+          aliasSet.add(existing.id);
+        }
+        (Array.isArray(aliases) ? aliases : []).forEach((value) => {
+          const text = String(value || "").trim();
+          if (text) {
+            aliasSet.add(text);
+          }
+        });
+        existing.aliases = Array.from(aliasSet);
+        nextMediaMetaByLabel[key] = existing;
+      };
+
+      if (advStoryDigestMoviesText) {
+        parseSimpleYamlList(advStoryDigestMoviesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const title = String(row.Title || "").trim();
+          if (!id) {
+            return;
+          }
+          const aliases = [title, `digest ${id}`];
+          upsertMediaMeta(
+            `picture_story_digest_${id}.usm`,
+            "advDigest",
+            id,
+            title,
+            aliases
+          );
+          upsertMediaMeta(
+            `picture_story_digest_thumbnail_${id}`,
+            "advDigest",
+            id,
+            title,
+            aliases
+          );
+        });
+      }
+
+      if (tutorialSchoolIdolStageMoviesText) {
+        parseSimpleYamlList(tutorialSchoolIdolStageMoviesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const title = String(row.Title || "").trim();
+          if (!id) {
+            return;
+          }
+          const aliases = [title, `tutorial ${id}`];
+          upsertMediaMeta(
+            `picture_schoolidolstage_tutorial_${id}.usm`,
+            "tutorial",
+            id,
+            title,
+            aliases
+          );
+          upsertMediaMeta(
+            `picture_schoolidolstage_tutorial_thumbnail_${id}`,
+            "tutorial",
+            id,
+            title,
+            aliases
+          );
+        });
+      }
+
+      if (memberMoviesText) {
+        parseSimpleYamlList(memberMoviesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          if (!id) {
+            return;
+          }
+          const characterCode = String(row.CharactersId || "").trim();
+          const characterName = characterCodeMap[characterCode]
+            ? characterCodeMap[characterCode].name
+            : characterCode;
+          const name = String(row.Name || "").trim();
+          const title = [characterName, name].filter(Boolean).join(" ");
+          const aliases = [name, characterName, String(row.ReleaseConditionText || "").trim()];
+          upsertMediaMeta(
+            `picture_introduction_${id}.usm`,
+            "memberIntro",
+            id,
+            title,
+            aliases
+          );
+          upsertMediaMeta(
+            `picture_introduction_thumbnail_${id}`,
+            "memberIntro",
+            id,
+            title,
+            aliases
+          );
+        });
+      }
+
+      if (memberVoicesText) {
+        parseSimpleYamlList(memberVoicesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const characterCode = String(row.CharactersId || "").trim();
+          const characterName = characterCodeMap[characterCode]
+            ? characterCodeMap[characterCode].name
+            : characterCode;
+          const name = String(row.Name || "").trim();
+          const voiceName = String(row.VoiceName || "").trim();
+          if (!voiceName) {
+            return;
+          }
+          const aliases = [
+            voiceName,
+            name,
+            characterName,
+            id ? `voice ${id}` : "",
+            String(row.ReleaseConditionText || "").trim(),
+          ];
+          const title = [characterName, name].filter(Boolean).join(" ");
+          deriveVoiceAssetLabels(voiceName).forEach((assetLabel) => {
+            upsertMediaMeta(
+              assetLabel,
+              "memberVoice",
+              id || characterCode,
+              title || characterName || id,
+              aliases
+            );
+          });
+        });
+      }
+
+      if (liveMoviesText) {
+        parseSimpleYamlList(liveMoviesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const title = String(row.Label || "").trim();
+          if (!id) {
+            return;
+          }
+          const id4 = id.padStart(4, "0");
+          const aliases = [title, `feslive ${id4}`];
+          upsertMediaMeta(
+            `feslive_movie_${id4}.usm`,
+            "fesLive",
+            id,
+            title,
+            aliases
+          );
+        });
+      }
+
+      if (styleMoviesText) {
+        parseSimpleYamlList(styleMoviesText).forEach((row) => {
+          const cardSeriesId = toIntString(row.CardSeriesId);
+          if (!cardSeriesId) {
+            return;
+          }
+          const movieType = toIntString(row.MovieType);
+          const title = String(row.Name || "").trim();
+          const aliases = [
+            title,
+            `card ${cardSeriesId}`,
+            movieType ? `movie type ${movieType}` : "",
+            String(row.ReleaseConditionText || "").trim(),
+          ];
+          [
+            `picture_ur_get_${cardSeriesId}_in.usm`,
+            `picture_ur_get_${cardSeriesId}_loop.usm`,
+            `picture_ur_training_${cardSeriesId}_in.usm`,
+            `picture_ur_training_${cardSeriesId}_loop.usm`,
+            `picture_ur_home_${cardSeriesId}0.usm`,
+            `picture_ur_home_${cardSeriesId}1.usm`,
+          ].forEach((assetLabel) => {
+            upsertMediaMeta(
+              assetLabel,
+              "styleMovie",
+              cardSeriesId,
+              title || cardSeriesId,
+              aliases
+            );
+          });
+        });
+      }
+
+      if (styleVoicesText) {
+        parseSimpleYamlList(styleVoicesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const cardSeriesId = toIntString(row.CardSeriesId);
+          const name = String(row.Name || "").trim();
+          const voiceName = String(row.VoiceName || "").trim();
+          if (!voiceName) {
+            return;
+          }
+          const aliases = [
+            voiceName,
+            name,
+            cardSeriesId ? `card ${cardSeriesId}` : "",
+            id ? `voice ${id}` : "",
+            String(row.ReleaseConditionText || "").trim(),
+          ];
+          deriveVoiceAssetLabels(voiceName).forEach((assetLabel) => {
+            upsertMediaMeta(
+              assetLabel,
+              "styleVoice",
+              id || cardSeriesId,
+              name || cardSeriesId || id,
+              aliases
+            );
+          });
+        });
+      }
+
+      if (cardGetMovieSettingsText) {
+        parseSimpleYamlList(cardGetMovieSettingsText).forEach((row) => {
+          const id = toIntString(row.Id);
+          if (!id) {
+            return;
+          }
+          const startMs = toIntString(row.CardInfoDisplayStartTimeSeconds);
+          const effectBackgroundId = toIntString(row.UrCardEffectBackgroundId);
+          const positionType = toIntString(row.CardInfoPositionType);
+          const cardSeriesId = id.length > 1 ? id.slice(0, -1) : "";
+          const aliases = [
+            cardSeriesId ? `card ${cardSeriesId}` : "",
+            `movie ${id}`,
+            startMs ? `start ${startMs}` : "",
+            effectBackgroundId ? `bg ${effectBackgroundId}` : "",
+            positionType ? `position ${positionType}` : "",
+          ];
+          upsertMediaMeta(
+            `picture_ur_home_${id}.usm`,
+            "cardGetMovie",
+            id,
+            `UR home ${id}`,
+            aliases
+          );
+        });
+      }
       musicMetaByMusicId = nextMusicMetaByMusicId;
       musicMetaBySoundId = nextMusicMetaBySoundId;
+      mediaMetaByLabel = nextMediaMetaByLabel;
     }
     )
     .catch(() => {});
@@ -868,6 +1305,7 @@ function buildNamingFilters(entries) {
   const codeCharacterCounter = new Map();
   const variantCounter = new Map();
   const songCounter = new Map();
+  const videoSourceCounter = new Map();
 
   entries.forEach((entry) => {
     const traits = entryTraits(entry);
@@ -876,6 +1314,7 @@ function buildNamingFilters(entries) {
     bumpCounter(codeCharacterCounter, traits.characterCode);
     bumpCounter(variantCounter, traits.variantCode);
     bumpCounter(songCounter, traits.musicId);
+    bumpCounter(videoSourceCounter, traits.videoSource);
   });
 
   namingFilterConfig = {
@@ -909,6 +1348,12 @@ function buildNamingFilters(entries) {
       state.songs,
       { minCount: 1, limit: 120 }
     ),
+    videoSources: buildDynamicFilterItems(
+      videoSourceCounter,
+      formatVideoSourceLabel,
+      state.videoSources,
+      { minCount: 1, limit: 12 }
+    ),
   };
 }
 
@@ -931,6 +1376,9 @@ function entryNamingSummary(entry) {
   }
   if (traits.songTitle) {
     parts.push(traits.songTitle);
+  }
+  if (traits.videoTitle && !parts.includes(traits.videoTitle)) {
+    parts.push(traits.videoTitle);
   }
   return parts.join(" • ");
 }
@@ -1369,6 +1817,13 @@ async function applyFilters() {
     });
   }
 
+  if (state.videoSources.length > 0) {
+    filtered = filtered.filter((entry) => {
+      const traits = entryTraits(entry);
+      return state.videoSources.includes(traits.videoSource);
+    });
+  }
+
   if (state.namingPrefixes.length > 0) {
     filtered = filtered.filter((entry) => {
       const traits = entryTraits(entry);
@@ -1537,6 +1992,9 @@ function updateUrl() {
   }
   if (state.songs.length > 0) {
     params.set("songs", state.songs.join(","));
+  }
+  if (state.videoSources.length > 0) {
+    params.set("videoSource", state.videoSources.join(","));
   }
   if (state.namingPrefixes.length > 0) {
     params.set("nPrefix", state.namingPrefixes.join(","));
@@ -1826,6 +2284,7 @@ function setupSearchControls() {
       state.character = [];
       state.tags = [];
       state.songs = [];
+      state.videoSources = [];
       state.namingPrefixes = [];
       state.namingSeries = [];
       state.namingCodeCharacters = [];
@@ -1839,6 +2298,7 @@ function setupSearchControls() {
       if (chipMatchSelect) {
         chipMatchSelect.value = "any";
       }
+      resetFilterPanelSearchState();
       currentPage = 1;
       updateUrl();
       applyFilters().catch(() => {});
@@ -1876,6 +2336,7 @@ function setupSearchControls() {
       character: [],
       tags: [],
       songs: [],
+      videoSources: [],
       namingPrefixes: [],
       namingSeries: [],
       namingCodeCharacters: [],
@@ -1896,6 +2357,7 @@ function setupSearchControls() {
     if (chipMatchSelect) {
       chipMatchSelect.value = "any";
     }
+    resetFilterPanelSearchState();
     currentPage = 1;
     syncDiffControls();
     updateUrl();
@@ -1940,6 +2402,7 @@ function hydrateStateFromUrl() {
   state.songs = parseParamList(params.get("songs"))
     .map((item) => normalizeMusicId(item))
     .filter(Boolean);
+  state.videoSources = parseParamList(params.get("videoSource"));
   state.namingPrefixes = parseParamList(params.get("nPrefix"));
   state.namingSeries = parseParamList(params.get("nSeries"));
   state.namingCodeCharacters = parseParamList(params.get("nChar"));
@@ -1977,7 +2440,8 @@ function renderFilterChips() {
       filterCountCache.media
     ),
     state.media,
-    (key) => toggleFilter("media", key)
+    (key) => toggleFilter("media", key),
+    { group: "media" }
   );
 
   renderFilterGroup(
@@ -1987,7 +2451,8 @@ function renderFilterChips() {
       filterCountCache.character
     ),
     state.character,
-    (key) => toggleFilter("character", key)
+    (key) => toggleFilter("character", key),
+    { group: "character" }
   );
 
   renderFilterGroup(
@@ -1997,42 +2462,56 @@ function renderFilterChips() {
       filterCountCache.tags
     ),
     state.tags,
-    (key) => toggleFilter("tags", key)
+    (key) => toggleFilter("tags", key),
+    { group: "tags" }
   );
 
   renderFilterGroup(
     document.getElementById("songFilters"),
     namingFilterConfig.songs || [],
     state.songs,
-    (key) => toggleFilter("songs", key)
+    (key) => toggleFilter("songs", key),
+    { group: "songs" }
+  );
+
+  renderFilterGroup(
+    document.getElementById("videoSourceFilters"),
+    namingFilterConfig.videoSources || [],
+    state.videoSources,
+    (key) => toggleFilter("videoSources", key),
+    { group: "videoSources" }
   );
 
   renderFilterGroup(
     document.getElementById("namingPrefixFilters"),
     namingFilterConfig.prefixes || [],
     state.namingPrefixes,
-    (key) => toggleFilter("namingPrefixes", key)
+    (key) => toggleFilter("namingPrefixes", key),
+    { group: "namingPrefixes" }
   );
 
   renderFilterGroup(
     document.getElementById("namingSeriesFilters"),
     namingFilterConfig.series || [],
     state.namingSeries,
-    (key) => toggleFilter("namingSeries", key)
+    (key) => toggleFilter("namingSeries", key),
+    { group: "namingSeries" }
   );
 
   renderFilterGroup(
     document.getElementById("namingCharacterFilters"),
     namingFilterConfig.codeCharacters || [],
     state.namingCodeCharacters,
-    (key) => toggleFilter("namingCodeCharacters", key)
+    (key) => toggleFilter("namingCodeCharacters", key),
+    { group: "namingCodeCharacters" }
   );
 
   renderFilterGroup(
     document.getElementById("namingVariantFilters"),
     namingFilterConfig.variants || [],
     state.namingVariants,
-    (key) => toggleFilter("namingVariants", key)
+    (key) => toggleFilter("namingVariants", key),
+    { group: "namingVariants" }
   );
 
   renderFilterStrategySummary();
@@ -2062,6 +2541,12 @@ function filterLabelFromGroup(group, key) {
   if (group === "songs") {
     return byConfig(namingFilterConfig.songs || []) || formatSongLabel(key);
   }
+  if (group === "videoSources") {
+    return (
+      byConfig(namingFilterConfig.videoSources || []) ||
+      formatVideoSourceLabel(key)
+    );
+  }
   if (group === "namingPrefixes") {
     return byConfig(namingFilterConfig.prefixes || []) || formatNamingPrefixLabel(key);
   }
@@ -2085,6 +2570,7 @@ function collectActiveFilters() {
     "character",
     "tags",
     "songs",
+    "videoSources",
     "namingPrefixes",
     "namingSeries",
     "namingCodeCharacters",
@@ -2184,26 +2670,187 @@ function toggleFilter(group, key) {
   renderFilterChips();
 }
 
-function renderFilterGroup(container, filters, activeKeys, onSelect) {
+function resolveFilterChipLabel(filter) {
+  if (!filter) {
+    return "";
+  }
+  if (filter.labelKey) {
+    return I18n.t(filter.labelKey);
+  }
+  return filter.label || filter.key || "";
+}
+
+function ensureFilterGroupTools(container, group, payload) {
+  const block = container ? container.closest(".filter-block") : null;
+  if (!block) {
+    return;
+  }
+  block.classList.add("filter-block-smart");
+  const panel = getFilterPanelState(group);
+  const activeCount = Number(payload.activeCount || 0);
+  const totalCount = Number(payload.totalCount || 0);
+  const hiddenCount = Number(payload.hiddenCount || 0);
+  const allowSearch = Boolean(payload.allowSearch);
+  const canCollapse = totalCount > 0;
+  const collapsed = panel.collapsed && activeCount === 0;
+  let toolbar = block.querySelector(".filter-block-tools");
+  if (!toolbar) {
+    toolbar = document.createElement("div");
+    toolbar.className = "filter-block-tools";
+    block.insertBefore(toolbar, container);
+  }
+
+  let searchInput = toolbar.querySelector(".filter-chip-search");
+  if (!searchInput) {
+    searchInput = document.createElement("input");
+    searchInput.type = "search";
+    searchInput.className = "form-control form-control-sm filter-chip-search";
+    searchInput.setAttribute("autocomplete", "off");
+    searchInput.addEventListener("input", () => {
+      const next = searchInput.value.trim().toLowerCase();
+      const current = getFilterPanelState(group);
+      current.query = next;
+      current.showAll = false;
+      renderFilterChips();
+    });
+    toolbar.appendChild(searchInput);
+  }
+  searchInput.placeholder = I18n.t("search.filterSearchPlaceholder");
+  searchInput.classList.toggle("d-none", !allowSearch && !panel.query);
+  if (searchInput.value !== panel.query) {
+    searchInput.value = panel.query || "";
+  }
+
+  let stats = toolbar.querySelector(".filter-block-count");
+  if (!stats) {
+    stats = document.createElement("span");
+    stats.className = "filter-block-count text-muted";
+    toolbar.appendChild(stats);
+  }
+  stats.textContent = `${App.formatNumber(activeCount)} / ${App.formatNumber(totalCount)}`;
+
+  let actions = toolbar.querySelector(".filter-block-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "filter-block-actions";
+    toolbar.appendChild(actions);
+  }
+
+  let moreButton = actions.querySelector(".filter-more-btn");
+  if (!moreButton) {
+    moreButton = document.createElement("button");
+    moreButton.type = "button";
+    moreButton.className = "btn btn-outline-dark btn-sm filter-more-btn";
+    moreButton.addEventListener("click", () => {
+      const current = getFilterPanelState(group);
+      current.showAll = !current.showAll;
+      renderFilterChips();
+    });
+    actions.appendChild(moreButton);
+  }
+  moreButton.classList.toggle("d-none", hiddenCount <= 0);
+  moreButton.textContent = panel.showAll
+    ? I18n.t("search.filterShowLess")
+    : I18n.t("search.filterShowMore", {
+        count: App.formatNumber(hiddenCount),
+      });
+
+  let collapseButton = actions.querySelector(".filter-collapse-btn");
+  if (!collapseButton) {
+    collapseButton = document.createElement("button");
+    collapseButton.type = "button";
+    collapseButton.className = "btn btn-outline-dark btn-sm filter-collapse-btn";
+    collapseButton.addEventListener("click", () => {
+      const current = getFilterPanelState(group);
+      current.collapsed = !current.collapsed;
+      renderFilterChips();
+    });
+    actions.appendChild(collapseButton);
+  }
+  collapseButton.classList.toggle("d-none", !canCollapse);
+  collapseButton.textContent = collapsed
+    ? I18n.t("search.filterExpand")
+    : I18n.t("search.filterCollapse");
+
+  block.classList.toggle("is-collapsed", collapsed);
+  container.classList.toggle("d-none", collapsed);
+}
+
+function renderFilterGroup(container, filters, activeKeys, onSelect, options = {}) {
   if (!container) {
     return;
   }
+  const group = options.group || "";
+  const panel = getFilterPanelState(group);
+  const activeSet = new Set(Array.isArray(activeKeys) ? activeKeys : []);
+  const list = Array.isArray(filters) ? filters : [];
+  const query = String(panel.query || "").trim().toLowerCase();
+  const items = list
+    .map((filter) => ({
+      filter,
+      key: filter.key,
+      label: resolveFilterChipLabel(filter),
+      active: activeSet.has(filter.key),
+    }))
+    .filter((item) => {
+      if (!query) {
+        return true;
+      }
+      const haystack = `${item.key} ${item.label}`.toLowerCase();
+      return haystack.includes(query);
+    })
+    .sort((a, b) => {
+      if (a.active !== b.active) {
+        return a.active ? -1 : 1;
+      }
+      const leftCount =
+        typeof a.filter.count === "number" && a.filter.count >= 0 ? a.filter.count : -1;
+      const rightCount =
+        typeof b.filter.count === "number" && b.filter.count >= 0 ? b.filter.count : -1;
+      if (rightCount !== leftCount) {
+        return rightCount - leftCount;
+      }
+      return a.label.localeCompare(b.label);
+    });
+
+  const limit = Number(panel.limit) > 0 ? Number(panel.limit) : 24;
+  let visible = items;
+  let hiddenCount = 0;
+  if (!panel.showAll && !query && items.length > limit) {
+    const selectedItems = items.filter((item) => item.active);
+    const normalItems = items.filter((item) => !item.active);
+    const keep = Math.max(limit - selectedItems.length, 0);
+    visible = selectedItems.concat(normalItems.slice(0, keep));
+    hiddenCount = Math.max(items.length - visible.length, 0);
+  }
+
   container.innerHTML = "";
-  filters.forEach((filter) => {
+  visible.forEach((item) => {
     const button = document.createElement("button");
     button.type = "button";
-    const isActive = Array.isArray(activeKeys) && activeKeys.includes(filter.key);
-    button.className = `filter-chip${isActive ? " active" : ""}`;
-    const text = filter.labelKey
-      ? I18n.t(filter.labelKey)
-      : filter.label;
-    if (typeof filter.count === "number" && filter.count >= 0) {
-      button.textContent = `${text} (${App.formatNumber(filter.count)})`;
+    button.className = `filter-chip${item.active ? " active" : ""}`;
+    if (typeof item.filter.count === "number" && item.filter.count >= 0) {
+      button.textContent = `${item.label} (${App.formatNumber(item.filter.count)})`;
     } else {
-      button.textContent = text;
+      button.textContent = item.label;
     }
-    button.addEventListener("click", () => onSelect(filter.key));
+    button.addEventListener("click", () => onSelect(item.key));
     container.appendChild(button);
+  });
+
+  if (!visible.length && query) {
+    const empty = document.createElement("div");
+    empty.className = "filter-group-empty text-muted";
+    empty.textContent = I18n.t("search.filterNoMatch");
+    container.appendChild(empty);
+  }
+
+  ensureFilterGroupTools(container, group, {
+    activeCount: activeSet.size,
+    totalCount: list.length,
+    hiddenCount,
+    allowSearch:
+      Boolean(panel.searchable) || query.length > 0 || list.length >= Math.max(limit, 12),
   });
 }
 

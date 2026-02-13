@@ -1986,15 +1986,64 @@ body {
 }
 
 .search-control-panel .filter-block {
-  gap: 0.36rem;
+  gap: 0.42rem;
+  border: 1px solid rgba(29, 26, 22, 0.1);
+  border-radius: 12px;
+  padding: 0.46rem 0.5rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(247, 250, 252, 0.72)),
+    radial-gradient(circle at 0 0, rgba(33, 93, 111, 0.05), transparent 48%);
+}
+
+.search-control-panel .filter-block-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.32rem;
+  align-items: center;
+}
+
+.search-control-panel .filter-chip-search {
+  min-width: 0;
+  height: 1.85rem;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.74rem;
+}
+
+.search-control-panel .filter-block-count {
+  font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.search-control-panel .filter-block-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+}
+
+.search-control-panel .filter-more-btn,
+.search-control-panel .filter-collapse-btn {
+  min-width: 3.2rem;
+  padding: 0.12rem 0.4rem;
+  font-size: 0.7rem;
+  line-height: 1.25;
+}
+
+.search-control-panel .filter-block.is-collapsed .chip-row {
+  display: none;
 }
 
 .search-control-panel .chip-row {
-  max-height: 7.8rem;
+  max-height: 8.8rem;
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 0.2rem;
   scrollbar-width: thin;
+}
+
+.search-control-panel .filter-group-empty {
+  padding: 0.32rem 0.25rem 0.1rem;
+  font-size: 0.74rem;
 }
 
 .search-control-grid {
