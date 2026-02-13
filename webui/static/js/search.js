@@ -7,6 +7,7 @@ let state = {
   media: [],
   character: [],
   tags: [],
+  songs: [],
   namingPrefixes: [],
   namingSeries: [],
   namingCodeCharacters: [],
@@ -34,6 +35,7 @@ let namingFilterConfig = {
   series: [],
   codeCharacters: [],
   variants: [],
+  songs: [],
 };
 let filterCountCache = {
   media: new Map(),
@@ -90,6 +92,11 @@ const defaultCostumeSeriesHints = {
 let costumeSeriesHints = { ...defaultCostumeSeriesHints };
 let costumeSeriesLoadPromise = null;
 let costumeModelHints = {};
+let musicMetaByMusicId = {};
+let musicMetaBySoundId = {};
+
+const bgmSoundIdLabelRE = /^bgm_(?:live|preview)_(\d+)\.(?:acb|awb)$/i;
+const lyricVideoMusicIdLabelRE = /^music_lyric_video_(\d+)\.usm$/i;
 
 const namingPrefixHints = {
   "3d_costume": "3D Costume",
@@ -332,6 +339,10 @@ function entryTraits(entry) {
     characterName: "",
     variantCode: "",
     modelLabel: "",
+    musicId: "",
+    soundId: "",
+    songTitle: "",
+    songAliases: [],
   };
 
   const costumeMatch = normalized.match(/^3d_costume_(\d{10})$/);
@@ -377,6 +388,16 @@ function entryTraits(entry) {
     traits.characterName = characterCodeMap[traits.characterCode].name;
   }
 
+  const songMeta = resolveSongMetaByLabel(label);
+  if (songMeta) {
+    traits.musicId = normalizeMusicId(songMeta.musicId);
+    traits.soundId = normalizeSoundId(songMeta.soundId);
+    traits.songTitle = String(songMeta.title || "").trim();
+    traits.songAliases = Array.isArray(songMeta.aliases)
+      ? songMeta.aliases.filter(Boolean)
+      : [];
+  }
+
   entry._traits = traits;
   return traits;
 }
@@ -409,6 +430,18 @@ function entrySearchText(entry) {
     if (traits.variantCode) {
       parts.push(`variant${traits.variantCode}`);
       parts.push(traits.variantCode);
+    }
+    if (traits.musicId) {
+      parts.push(traits.musicId);
+    }
+    if (traits.soundId) {
+      parts.push(traits.soundId);
+    }
+    if (traits.songTitle) {
+      parts.push(traits.songTitle);
+    }
+    if (Array.isArray(traits.songAliases) && traits.songAliases.length) {
+      parts.push(traits.songAliases.join(" "));
     }
     if (traits.modelLabel) {
       parts.push(traits.modelLabel);
@@ -591,6 +624,63 @@ function toCharacterKey(rawName, fallbackId) {
   return fallbackId ? `char${fallbackId}` : "";
 }
 
+function normalizeMusicId(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/^0+/, "");
+}
+
+function normalizeSoundId(raw) {
+  return String(raw || "").trim();
+}
+
+function musicTitleCandidatesForId(musicId, liveMusicMap) {
+  const values = liveMusicMap[musicId];
+  if (!values) {
+    return [];
+  }
+  return Array.from(values).filter(Boolean);
+}
+
+function resolveSongMetaByLabel(label) {
+  const normalized = String(label || "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  const bgmMatch = normalized.match(bgmSoundIdLabelRE);
+  if (bgmMatch) {
+    const soundId = normalizeSoundId(bgmMatch[1]);
+    const fromSound = musicMetaBySoundId[soundId];
+    if (fromSound) {
+      return fromSound;
+    }
+  }
+
+  const lyricMatch = normalized.match(lyricVideoMusicIdLabelRE);
+  if (lyricMatch) {
+    const musicId = normalizeMusicId(lyricMatch[1]);
+    const fromMusic = musicMetaByMusicId[musicId];
+    if (fromMusic) {
+      return fromMusic;
+    }
+  }
+  return null;
+}
+
+function formatSongLabel(musicId) {
+  const normalized = normalizeMusicId(musicId);
+  const meta = musicMetaByMusicId[normalized];
+  if (!meta) {
+    return normalized;
+  }
+  const title = String(meta.title || "").trim();
+  if (!title) {
+    return normalized;
+  }
+  return `${title} (${normalized})`;
+}
+
 function loadCostumeSeriesHints() {
   if (costumeSeriesLoadPromise) {
     return costumeSeriesLoadPromise;
@@ -605,8 +695,21 @@ function loadCostumeSeriesHints() {
     fetch("/api/masterdata/file?name=Characters")
       .then((res) => (res.ok ? res.text() : ""))
       .catch(() => ""),
+    fetch("/api/masterdata/file?name=Musics")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=LiveMusic")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
   ])
-    .then(([costumesText, costumeModelsText, charactersText]) => {
+    .then(
+      ([
+        costumesText,
+        costumeModelsText,
+        charactersText,
+        musicsText,
+        liveMusicText,
+      ]) => {
       const nextSeriesHints = { ...defaultCostumeSeriesHints };
       if (costumesText) {
         parseSimpleYamlList(costumesText).forEach((row) => {
@@ -667,7 +770,54 @@ function loadCostumeSeriesHints() {
         });
       }
       costumeModelHints = nextCostumeModelHints;
-    })
+      const liveMusicMap = {};
+      if (liveMusicText) {
+        parseSimpleYamlList(liveMusicText).forEach((row) => {
+          const musicId = normalizeMusicId(row.MusicId);
+          const label = String(row.Label || "").trim();
+          if (!musicId || !label) {
+            return;
+          }
+          if (!liveMusicMap[musicId]) {
+            liveMusicMap[musicId] = new Set();
+          }
+          liveMusicMap[musicId].add(label);
+        });
+      }
+
+      const nextMusicMetaByMusicId = {};
+      const nextMusicMetaBySoundId = {};
+      if (musicsText) {
+        parseSimpleYamlList(musicsText).forEach((row) => {
+          const musicId = normalizeMusicId(row.Id);
+          const soundId = normalizeSoundId(row.SoundId);
+          const title = String(row.Title || "").trim();
+          if (!musicId) {
+            return;
+          }
+          const aliases = new Set();
+          if (title) {
+            aliases.add(title);
+          }
+          musicTitleCandidatesForId(musicId, liveMusicMap).forEach((value) =>
+            aliases.add(value)
+          );
+          const meta = {
+            musicId,
+            soundId,
+            title,
+            aliases: Array.from(aliases),
+          };
+          nextMusicMetaByMusicId[musicId] = meta;
+          if (soundId) {
+            nextMusicMetaBySoundId[soundId] = meta;
+          }
+        });
+      }
+      musicMetaByMusicId = nextMusicMetaByMusicId;
+      musicMetaBySoundId = nextMusicMetaBySoundId;
+    }
+    )
     .catch(() => {});
   return costumeSeriesLoadPromise;
 }
@@ -717,6 +867,7 @@ function buildNamingFilters(entries) {
   const seriesCounter = new Map();
   const codeCharacterCounter = new Map();
   const variantCounter = new Map();
+  const songCounter = new Map();
 
   entries.forEach((entry) => {
     const traits = entryTraits(entry);
@@ -724,6 +875,7 @@ function buildNamingFilters(entries) {
     bumpCounter(seriesCounter, traits.seriesCode);
     bumpCounter(codeCharacterCounter, traits.characterCode);
     bumpCounter(variantCounter, traits.variantCode);
+    bumpCounter(songCounter, traits.musicId);
   });
 
   namingFilterConfig = {
@@ -751,6 +903,12 @@ function buildNamingFilters(entries) {
       state.namingVariants,
       { minCount: 1, limit: 24 }
     ),
+    songs: buildDynamicFilterItems(
+      songCounter,
+      formatSongLabel,
+      state.songs,
+      { minCount: 1, limit: 120 }
+    ),
   };
 }
 
@@ -770,6 +928,9 @@ function entryNamingSummary(entry) {
   }
   if (traits.variantCode) {
     parts.push(formatVariantLabel(traits.variantCode));
+  }
+  if (traits.songTitle) {
+    parts.push(traits.songTitle);
   }
   return parts.join(" • ");
 }
@@ -1201,6 +1362,13 @@ async function applyFilters() {
     }
   }
 
+  if (state.songs.length > 0) {
+    filtered = filtered.filter((entry) => {
+      const traits = entryTraits(entry);
+      return state.songs.includes(traits.musicId);
+    });
+  }
+
   if (state.namingPrefixes.length > 0) {
     filtered = filtered.filter((entry) => {
       const traits = entryTraits(entry);
@@ -1366,6 +1534,9 @@ function updateUrl() {
   }
   if (state.tags.length > 0) {
     params.set("tags", state.tags.join(","));
+  }
+  if (state.songs.length > 0) {
+    params.set("songs", state.songs.join(","));
   }
   if (state.namingPrefixes.length > 0) {
     params.set("nPrefix", state.namingPrefixes.join(","));
@@ -1654,6 +1825,7 @@ function setupSearchControls() {
       state.media = [];
       state.character = [];
       state.tags = [];
+      state.songs = [];
       state.namingPrefixes = [];
       state.namingSeries = [];
       state.namingCodeCharacters = [];
@@ -1703,6 +1875,7 @@ function setupSearchControls() {
       media: [],
       character: [],
       tags: [],
+      songs: [],
       namingPrefixes: [],
       namingSeries: [],
       namingCodeCharacters: [],
@@ -1764,6 +1937,9 @@ function hydrateStateFromUrl() {
   state.media = parseParamList(params.get("media"));
   state.character = parseParamList(params.get("character"));
   state.tags = parseParamList(params.get("tags"));
+  state.songs = parseParamList(params.get("songs"))
+    .map((item) => normalizeMusicId(item))
+    .filter(Boolean);
   state.namingPrefixes = parseParamList(params.get("nPrefix"));
   state.namingSeries = parseParamList(params.get("nSeries"));
   state.namingCodeCharacters = parseParamList(params.get("nChar"));
@@ -1825,6 +2001,13 @@ function renderFilterChips() {
   );
 
   renderFilterGroup(
+    document.getElementById("songFilters"),
+    namingFilterConfig.songs || [],
+    state.songs,
+    (key) => toggleFilter("songs", key)
+  );
+
+  renderFilterGroup(
     document.getElementById("namingPrefixFilters"),
     namingFilterConfig.prefixes || [],
     state.namingPrefixes,
@@ -1876,6 +2059,9 @@ function filterLabelFromGroup(group, key) {
   if (group === "tags") {
     return byConfig(window.FilterConfig ? FilterConfig.tags : []);
   }
+  if (group === "songs") {
+    return byConfig(namingFilterConfig.songs || []) || formatSongLabel(key);
+  }
   if (group === "namingPrefixes") {
     return byConfig(namingFilterConfig.prefixes || []) || formatNamingPrefixLabel(key);
   }
@@ -1898,6 +2084,7 @@ function collectActiveFilters() {
     "media",
     "character",
     "tags",
+    "songs",
     "namingPrefixes",
     "namingSeries",
     "namingCodeCharacters",

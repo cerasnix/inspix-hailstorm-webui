@@ -139,6 +139,7 @@ window.I18n = (() => {
       "search.diffSummary":
         "Diff cache {{known}} / {{total}} · unchanged {{unchanged}} · modified {{modified}} · added {{added}} · removed {{removed}} · missing {{missing}} · error {{error}}",
       "search.filterTags": "Tags",
+      "search.filterSongs": "Songs",
       "search.filterNamingPrefix": "Naming prefix",
       "search.filterCostumeSeries": "Costume series",
       "search.filterCodeCharacter": "Code character",
@@ -532,6 +533,7 @@ window.I18n = (() => {
       "search.diffSummary":
         "差异缓存 {{known}} / {{total}} · 未变化 {{unchanged}} · 修改 {{modified}} · 新增 {{added}} · 删除 {{removed}} · 缺失 {{missing}} · 错误 {{error}}",
       "search.filterTags": "标签",
+      "search.filterSongs": "歌曲",
       "search.filterNamingPrefix": "命名前缀",
       "search.filterCostumeSeries": "服装系列",
       "search.filterCodeCharacter": "编号角色",
@@ -921,6 +923,7 @@ window.I18n = (() => {
       "search.diffSummary":
         "差分キャッシュ {{known}} / {{total}} ・ 変更なし {{unchanged}} ・ 変更 {{modified}} ・ 追加 {{added}} ・ 削除 {{removed}} ・ 未検出 {{missing}} ・ エラー {{error}}",
       "search.filterTags": "タグ",
+      "search.filterSongs": "楽曲",
       "search.filterNamingPrefix": "命名プレフィックス",
       "search.filterCostumeSeries": "衣装シリーズ",
       "search.filterCodeCharacter": "コードキャラクター",

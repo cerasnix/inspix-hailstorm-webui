@@ -45,6 +45,8 @@ var musicLyricVideoRE = regexp.MustCompile(`(?i)^music_lyric_video_(\d+)\.usm$`)
 var trailingNumberBeforeExtRE = regexp.MustCompile(`(?i)(\d+)(?:\.[^.]+)?$`)
 var bundleNameLineRE = regexp.MustCompile(`"m_AssetBundleName"\s*:\s*"([^"]*)"`)
 var quotedStringLineRE = regexp.MustCompile(`"([^"\\]+)"`)
+var leadingSilenceRE = regexp.MustCompile(`(?s)silence_start:\s*0(?:\.0+)?\s.*?silence_end:\s*([0-9]+(?:\.[0-9]+)?)`)
+var leadingBlackRE = regexp.MustCompile(`black_start:0(?:\.0+)?\s+black_end:([0-9]+(?:\.[0-9]+)?)`)
 
 type PreviewItem struct {
 	ID          string
@@ -1661,6 +1663,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 	// Some USM files carry no audio stream, so optional ACB companion audio can
 	// be mapped as input #1.
 	if companionAudioPath != "" {
+		audioCompensation := estimateCompanionAudioCompensation(inputPath, companionAudioPath)
 		// USM packets may lack stable timestamps for stream-copy muxing. Assign
 		// deterministic PTS/DTS from frame index so we can keep H.264 bitstream.
 		fps := detectVideoFPS(inputPath)
@@ -1672,7 +1675,9 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 			"-y",
 			"-fflags", "+genpts",
 			"-i", inputPath,
-			"-i", companionAudioPath,
+		}
+		remuxWithAudioArgs = appendCompanionAudioInputArgs(remuxWithAudioArgs, companionAudioPath, audioCompensation)
+		remuxWithAudioArgs = append(remuxWithAudioArgs,
 			"-map", "0:v:0",
 			"-map", "1:a:0",
 			"-c:v", "copy",
@@ -1681,7 +1686,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 			"-shortest",
 			"-movflags", "+faststart",
 			outPath,
-		}
+		)
 		if err := exec.Command("ffmpeg", remuxWithAudioArgs...).Run(); err == nil {
 			return true
 		}
@@ -1694,7 +1699,9 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 			"-y",
 			"-fflags", "+genpts",
 			"-i", inputPath,
-			"-i", companionAudioPath,
+		}
+		transcodeWithAudioArgs = appendCompanionAudioInputArgs(transcodeWithAudioArgs, companionAudioPath, audioCompensation)
+		transcodeWithAudioArgs = append(transcodeWithAudioArgs,
 			"-map", "0:v:0",
 			"-map", "1:a:0",
 			"-c:v", "libx264",
@@ -1706,7 +1713,7 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 			"-shortest",
 			"-movflags", "+faststart",
 			outPath,
-		}
+		)
 		return exec.Command("ffmpeg", transcodeWithAudioArgs...).Run() == nil
 	}
 
@@ -1750,6 +1757,109 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 		outPath,
 	}
 	return exec.Command("ffmpeg", transcodeArgs...).Run() == nil
+}
+
+func appendCompanionAudioInputArgs(args []string, companionAudioPath string, compensation float64) []string {
+	if compensation > 0.01 {
+		return append(args, "-ss", fmt.Sprintf("%.3f", compensation), "-i", companionAudioPath)
+	}
+	if compensation < -0.01 {
+		return append(args, "-itsoffset", fmt.Sprintf("%.3f", -compensation), "-i", companionAudioPath)
+	}
+	return append(args, "-i", companionAudioPath)
+}
+
+func estimateCompanionAudioCompensation(videoPath string, companionAudioPath string) float64 {
+	leadingSilence := detectLeadingSilenceSeconds(companionAudioPath)
+	leadingBlack := detectLeadingBlackSeconds(videoPath)
+	autoAdvance := leadingSilence - leadingBlack
+	if autoAdvance < 0.08 || autoAdvance > 4.5 {
+		autoAdvance = 0
+	}
+	manualAdvance := companionAudioManualAdvanceSeconds()
+	compensation := autoAdvance + manualAdvance
+	if compensation > 6 {
+		compensation = 6
+	} else if compensation < -6 {
+		compensation = -6
+	}
+	if math.Abs(compensation) < 0.01 {
+		return 0
+	}
+	return compensation
+}
+
+func companionAudioManualAdvanceSeconds() float64 {
+	raw := strings.TrimSpace(os.Getenv("HAILSTORM_USM_AUDIO_ADVANCE_MS"))
+	if raw == "" {
+		return 0
+	}
+	ms, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0
+	}
+	return ms / 1000.0
+}
+
+func detectLeadingSilenceSeconds(path string) float64 {
+	out, err := exec.Command(
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"info",
+		"-i",
+		path,
+		"-af",
+		"silencedetect=noise=-45dB:d=0.12",
+		"-t",
+		"8",
+		"-f",
+		"null",
+		"-",
+	).CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return 0
+	}
+	match := leadingSilenceRE.FindStringSubmatch(string(out))
+	if len(match) < 2 {
+		return 0
+	}
+	seconds, parseErr := strconv.ParseFloat(strings.TrimSpace(match[1]), 64)
+	if parseErr != nil || seconds <= 0 {
+		return 0
+	}
+	return seconds
+}
+
+func detectLeadingBlackSeconds(path string) float64 {
+	out, err := exec.Command(
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"info",
+		"-i",
+		path,
+		"-vf",
+		"blackdetect=d=0.08:pic_th=0.98",
+		"-an",
+		"-t",
+		"8",
+		"-f",
+		"null",
+		"-",
+	).CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return 0
+	}
+	match := leadingBlackRE.FindStringSubmatch(string(out))
+	if len(match) < 2 {
+		return 0
+	}
+	seconds, parseErr := strconv.ParseFloat(strings.TrimSpace(match[1]), 64)
+	if parseErr != nil || seconds <= 0 {
+		return 0
+	}
+	return seconds
 }
 
 func detectVideoFPS(inputPath string) float64 {
