@@ -1688,10 +1688,14 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 			outPath,
 		)
 		if err := exec.Command("ffmpeg", remuxWithAudioArgs...).Run(); err == nil {
-			return true
+			if isBrowserCompatibleMP4(outPath) {
+				return true
+			}
+			_ = os.Remove(outPath)
 		}
 
-		// Fallback when stream-copy muxing still fails on specific files.
+		// Remux may succeed but still produce browser-incompatible output.
+		// Fallback to full transcode for consistent web playback.
 		reportPreviewProgress(report, 76, "transcode", "")
 		transcodeWithAudioArgs := []string{
 			"-hide_banner",
@@ -1709,12 +1713,20 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 			"-pix_fmt", "yuv420p",
 			"-profile:v", "main",
 			"-level:v", "4.1",
-			"-c:a", "copy",
+			"-c:a", "aac",
+			"-ac", "2",
+			"-b:a", "192k",
 			"-shortest",
 			"-movflags", "+faststart",
 			outPath,
 		)
-		return exec.Command("ffmpeg", transcodeWithAudioArgs...).Run() == nil
+		if err := exec.Command("ffmpeg", transcodeWithAudioArgs...).Run(); err != nil {
+			return false
+		}
+		if isBrowserCompatibleMP4(outPath) {
+			return true
+		}
+		return false
 	}
 
 	// USM-contained audio stream is optional.
@@ -1733,10 +1745,14 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 		outPath,
 	}
 	if err := exec.Command("ffmpeg", remuxArgs...).Run(); err == nil {
-		return true
+		if isBrowserCompatibleMP4(outPath) {
+			return true
+		}
+		_ = os.Remove(outPath)
 	}
 
-	// Fallback to full transcode when remux fails on specific streams.
+	// Fallback to full transcode when remux fails or when output still cannot
+	// be decoded reliably by browsers.
 	reportPreviewProgress(report, 76, "transcode", "")
 	transcodeArgs := []string{
 		"-hide_banner",
@@ -1753,10 +1769,17 @@ func transcodeUsmToMp4(inputPath string, companionAudioPath string, outPath stri
 		"-level:v", "4.1",
 		"-c:a", "aac",
 		"-ac", "2",
+		"-b:a", "192k",
 		"-movflags", "+faststart",
 		outPath,
 	}
-	return exec.Command("ffmpeg", transcodeArgs...).Run() == nil
+	if err := exec.Command("ffmpeg", transcodeArgs...).Run(); err != nil {
+		return false
+	}
+	if isBrowserCompatibleMP4(outPath) {
+		return true
+	}
+	return false
 }
 
 func appendCompanionAudioInputArgs(args []string, companionAudioPath string, compensation float64) []string {
@@ -1860,6 +1883,52 @@ func detectLeadingBlackSeconds(path string) float64 {
 		return 0
 	}
 	return seconds
+}
+
+func isBrowserCompatibleMP4(path string) bool {
+	if strings.TrimSpace(path) == "" || !fileExists(path) {
+		return false
+	}
+	out, err := exec.Command(
+		"ffprobe",
+		"-v",
+		"error",
+		"-show_entries",
+		"stream=codec_type,codec_name,codec_tag_string,pix_fmt,is_avc,profile",
+		"-show_entries",
+		"format=format_name",
+		"-of",
+		"default=noprint_wrappers=1:nokey=0",
+		path,
+	).Output()
+	if err != nil {
+		return false
+	}
+	text := strings.ToLower(string(out))
+	if !strings.Contains(text, "format_name=mov,mp4") {
+		return false
+	}
+	if !strings.Contains(text, "codec_type=video") {
+		return false
+	}
+	if !strings.Contains(text, "codec_name=h264") {
+		return false
+	}
+	if !strings.Contains(text, "codec_tag_string=avc1") {
+		return false
+	}
+	if !strings.Contains(text, "pix_fmt=yuv420p") {
+		return false
+	}
+	if !strings.Contains(text, "is_avc=true") {
+		return false
+	}
+	if strings.Contains(text, "codec_type=audio") &&
+		!strings.Contains(text, "codec_name=aac") &&
+		!strings.Contains(text, "codec_name=mp3") {
+		return false
+	}
+	return true
 }
 
 func detectVideoFPS(inputPath string) float64 {
