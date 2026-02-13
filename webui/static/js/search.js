@@ -21,6 +21,162 @@ let diffStatusCacheKey = "";
 let diffStatusCache = new Map();
 let perPageTouched = false;
 const listViewAutoPerPage = 72;
+const diffFilterYieldChunk = 1600;
+let diffProgressToken = 0;
+let diffProgressHideTimer = null;
+
+function yieldToUI() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+function clearDiffProgressHideTimer() {
+  if (diffProgressHideTimer) {
+    clearTimeout(diffProgressHideTimer);
+    diffProgressHideTimer = null;
+  }
+}
+
+function setDiffProgressState(payload) {
+  const root = document.getElementById("diffProgress");
+  const textNode = document.getElementById("diffProgressText");
+  const ratioNode = document.getElementById("diffProgressRatio");
+  const fill = document.getElementById("diffProgressFill");
+  if (!root || !textNode || !ratioNode || !fill) {
+    return;
+  }
+
+  const {
+    token,
+    visible = false,
+    text = I18n.t("search.diffProgressIdle"),
+    loaded = 0,
+    total = 0,
+  } = payload || {};
+
+  if (typeof token === "number" && token !== diffProgressToken) {
+    return;
+  }
+
+  clearDiffProgressHideTimer();
+  root.classList.toggle("d-none", !visible);
+  textNode.textContent = text;
+
+  const safeTotal = Number(total) > 0 ? Number(total) : 0;
+  const safeLoaded = safeTotal > 0 ? Math.min(Math.max(Number(loaded) || 0, 0), safeTotal) : 0;
+  ratioNode.textContent =
+    safeTotal > 0
+      ? `${App.formatNumber(safeLoaded)} / ${App.formatNumber(safeTotal)}`
+      : "-";
+
+  const percent = safeTotal > 0 ? Math.round((safeLoaded / safeTotal) * 100) : 0;
+  fill.style.width = `${percent}%`;
+  fill.setAttribute("aria-valuenow", `${percent}`);
+}
+
+function finalizeDiffProgress(token, text, loaded = 0, total = 0) {
+  setDiffProgressState({
+    token,
+    visible: true,
+    text,
+    loaded,
+    total,
+  });
+  diffProgressHideTimer = setTimeout(() => {
+    if (token !== diffProgressToken) {
+      return;
+    }
+    setDiffProgressState({
+      token,
+      visible: false,
+      text: I18n.t("search.diffProgressIdle"),
+      loaded: 0,
+      total: 0,
+    });
+  }, 1200);
+}
+
+function normalizeDiffStatus(status) {
+  if (status === "unchanged") {
+    return "unchanged";
+  }
+  if (status === "modified") {
+    return "modified";
+  }
+  if (status === "added") {
+    return "added";
+  }
+  if (status === "removed") {
+    return "removed";
+  }
+  if (status === "missing") {
+    return "missing";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  return "unknown";
+}
+
+function renderDiffSummary(entries) {
+  const node = document.getElementById("diffSummaryText");
+  if (!node) {
+    return;
+  }
+
+  if (!diffEnabled()) {
+    node.textContent = I18n.t("search.diffSummaryDisabled");
+    return;
+  }
+
+  const total = Array.isArray(entries) ? entries.length : 0;
+  if (total <= 0) {
+    node.textContent = I18n.t("search.diffSummaryEmpty");
+    return;
+  }
+
+  const counts = {
+    unchanged: 0,
+    modified: 0,
+    added: 0,
+    removed: 0,
+    missing: 0,
+    error: 0,
+  };
+
+  let known = 0;
+  entries.forEach((entry) => {
+    const status = normalizeDiffStatus(diffStatusCache.get(entry.label));
+    if (status === "unknown") {
+      return;
+    }
+    known += 1;
+    if (status in counts) {
+      counts[status] += 1;
+    } else {
+      counts.error += 1;
+    }
+  });
+
+  if (known <= 0) {
+    node.textContent = I18n.t("search.diffSummaryPending", {
+      total: App.formatNumber(total),
+    });
+    return;
+  }
+
+  node.textContent = I18n.t("search.diffSummary", {
+    known: App.formatNumber(known),
+    total: App.formatNumber(total),
+    unchanged: App.formatNumber(counts.unchanged),
+    modified: App.formatNumber(counts.modified),
+    added: App.formatNumber(counts.added),
+    removed: App.formatNumber(counts.removed),
+    missing: App.formatNumber(counts.missing),
+    error: App.formatNumber(counts.error),
+  });
+}
 
 function entryTokens(entry) {
   if (!entry._tokens) {
@@ -126,15 +282,30 @@ function statusMatchesFilter(status) {
   return status === state.diffStatus;
 }
 
-async function ensureDiffStatuses(labels) {
+async function ensureDiffStatuses(labels, options = {}) {
+  const shouldStop =
+    options && typeof options.shouldStop === "function"
+      ? options.shouldStop
+      : null;
+  const onProgress =
+    options && typeof options.onProgress === "function"
+      ? options.onProgress
+      : null;
+
   if (!diffEnabled()) {
-    return { complete: true, failedBatches: 0 };
+    return { complete: true, failedBatches: 0, cancelled: false, loaded: 0, total: 0 };
   }
+
+  if (shouldStop && shouldStop()) {
+    return { complete: false, failedBatches: 0, cancelled: true, loaded: 0, total: 0 };
+  }
+
   resetDiffCacheIfNeeded();
   const unique = Array.from(new Set(labels.filter(Boolean)));
   const missing = unique.filter((label) => !diffStatusCache.has(label));
+  const total = missing.length;
   if (!missing.length) {
-    return { complete: true, failedBatches: 0 };
+    return { complete: true, failedBatches: 0, cancelled: false, loaded: 0, total: 0 };
   }
 
   const batchSize = 500;
@@ -144,11 +315,22 @@ async function ensureDiffStatuses(labels) {
     batches.push(missing.slice(i, i + batchSize));
   }
 
+  if (onProgress) {
+    onProgress({ phase: "prepare", loaded: 0, total, failedBatches: 0 });
+  }
+
   let failedBatches = 0;
+  let loaded = 0;
   for (let i = 0; i < batches.length; i += maxConcurrent) {
+    if (shouldStop && shouldStop()) {
+      return { complete: false, failedBatches, cancelled: true, loaded, total };
+    }
     const slice = batches.slice(i, i + maxConcurrent);
     const results = await Promise.all(
       slice.map(async (chunk) => {
+        if (shouldStop && shouldStop()) {
+          return "cancelled";
+        }
         try {
           const data = await App.apiPost("/api/masterdata/diff/lookup", {
             from: state.diffFrom,
@@ -157,23 +339,48 @@ async function ensureDiffStatuses(labels) {
           });
           const items = data.items || {};
           chunk.forEach((label) => {
-            diffStatusCache.set(label, (items[label] || {}).status || "missing");
+            diffStatusCache.set(
+              label,
+              normalizeDiffStatus((items[label] || {}).status || "missing")
+            );
           });
-          return true;
+          return "ok";
         } catch (err) {
           chunk.forEach((label) => {
             if (!diffStatusCache.has(label)) {
               diffStatusCache.set(label, "error");
             }
           });
-          return false;
+          return "failed";
         }
       })
     );
-    failedBatches += results.filter((ok) => !ok).length;
+    results.forEach((result, idx) => {
+      if (result !== "cancelled") {
+        loaded += slice[idx].length;
+      }
+      if (result === "failed") {
+        failedBatches += 1;
+      }
+    });
+    if (onProgress) {
+      onProgress({
+        phase: "loading",
+        loaded: Math.min(loaded, total),
+        total,
+        failedBatches,
+      });
+    }
+    await yieldToUI();
   }
 
-  return { complete: failedBatches === 0, failedBatches };
+  return {
+    complete: failedBatches === 0,
+    failedBatches,
+    cancelled: false,
+    loaded,
+    total,
+  };
 }
 
 function diffLabelFromStatus(status) {
@@ -182,6 +389,9 @@ function diffLabelFromStatus(status) {
   }
   if (status === "missing") {
     return I18n.t("search.diffMissing");
+  }
+  if (status === "error") {
+    return I18n.t("search.diffFailed");
   }
   const key = `master.diffStatus.${status || "unknown"}`;
   return I18n.t(key);
@@ -207,6 +417,7 @@ async function refreshVisibleEntryDiffs(pageEntries) {
       node.className = "badge search-diff-chip search-diff-disabled";
       node.textContent = I18n.t("search.diffDisabled");
     });
+    renderDiffSummary(searchEntries);
     return;
   }
 
@@ -222,14 +433,20 @@ async function refreshVisibleEntryDiffs(pageEntries) {
 
   const token = ++diffLookupToken;
   try {
-    await ensureDiffStatuses(labels);
+    const lookup = await ensureDiffStatuses(labels, {
+      shouldStop: () => token !== diffLookupToken,
+    });
+    if (lookup.cancelled) {
+      return;
+    }
     if (token !== diffLookupToken) {
       return;
     }
     chips.forEach((node) => {
       const label = node.dataset.label;
-      applyDiffChip(node, diffStatusCache.get(label) || "missing");
+      applyDiffChip(node, normalizeDiffStatus(diffStatusCache.get(label) || "missing"));
     });
+    renderDiffSummary(searchEntries);
   } catch (err) {
     if (token !== diffLookupToken) {
       return;
@@ -238,6 +455,7 @@ async function refreshVisibleEntryDiffs(pageEntries) {
       node.className = "badge search-diff-chip search-diff-error";
       node.textContent = I18n.t("search.diffFailed");
     });
+    renderDiffSummary(searchEntries);
   }
 }
 
@@ -296,12 +514,13 @@ function renderResults() {
     container.appendChild(card);
   });
 
-  renderPagination(totalPages);
-  refreshVisibleEntryDiffs(pageEntries);
   document.getElementById("searchSummary").textContent = I18n.t(
     "search.entries",
     { count: searchEntries.length }
   );
+  renderDiffSummary(searchEntries);
+  renderPagination(totalPages);
+  refreshVisibleEntryDiffs(pageEntries);
 }
 
 function renderPagination(totalPages) {
@@ -319,7 +538,11 @@ function renderPagination(totalPages) {
   };
 
   container.appendChild(
-    makeButton("Prev", Math.max(1, currentPage - 1), currentPage === 1)
+    makeButton(
+      I18n.t("search.pagePrev"),
+      Math.max(1, currentPage - 1),
+      currentPage === 1
+    )
   );
   for (let i = 1; i <= totalPages; i += 1) {
     if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= 1) {
@@ -333,7 +556,7 @@ function renderPagination(totalPages) {
   }
   container.appendChild(
     makeButton(
-      "Next",
+      I18n.t("search.pageNext"),
       Math.min(totalPages, currentPage + 1),
       currentPage === totalPages
     )
@@ -396,13 +619,115 @@ async function applyFilters() {
   }
 
   if (diffEnabled() && state.diffStatus !== "all") {
-    await ensureDiffStatuses(filtered.map((entry) => entry.label));
-    if (token !== diffFilterToken) {
+    diffProgressToken = token;
+    setDiffProgressState({
+      token,
+      visible: true,
+      text: I18n.t("search.diffProgressPrepare"),
+      loaded: 0,
+      total: filtered.length,
+    });
+
+    const ensureResult = await ensureDiffStatuses(filtered.map((entry) => entry.label), {
+      shouldStop: () => token !== diffFilterToken,
+      onProgress: (progress) => {
+        if (token !== diffFilterToken) {
+          return;
+        }
+        if (progress.phase === "prepare") {
+          setDiffProgressState({
+            token,
+            visible: true,
+            text: I18n.t("search.diffProgressPrepare"),
+            loaded: progress.loaded,
+            total: progress.total,
+          });
+          return;
+        }
+        setDiffProgressState({
+          token,
+          visible: true,
+          text: I18n.t("search.diffProgressLoading", {
+            loaded: App.formatNumber(progress.loaded),
+            total: App.formatNumber(progress.total),
+          }),
+          loaded: progress.loaded,
+          total: progress.total,
+        });
+      },
+    });
+    if (token !== diffFilterToken || ensureResult.cancelled) {
+      if (token === diffProgressToken) {
+        setDiffProgressState({
+          token,
+          visible: false,
+          text: I18n.t("search.diffProgressCancelled"),
+          loaded: 0,
+          total: 0,
+        });
+      }
       return;
     }
-    filtered = filtered.filter((entry) =>
-      statusMatchesFilter(diffStatusCache.get(entry.label) || "missing")
-    );
+
+    const source = filtered;
+    const totalSource = source.length;
+    const next = [];
+    for (let i = 0; i < source.length; i += 1) {
+      const entry = source[i];
+      const status = normalizeDiffStatus(diffStatusCache.get(entry.label) || "missing");
+      if (statusMatchesFilter(status)) {
+        next.push(entry);
+      }
+      const scanned = i + 1;
+      if (scanned % diffFilterYieldChunk === 0 || scanned === totalSource) {
+        if (token !== diffFilterToken) {
+          return;
+        }
+        setDiffProgressState({
+          token,
+          visible: true,
+          text: I18n.t("search.diffProgressFiltering", {
+            loaded: App.formatNumber(scanned),
+            total: App.formatNumber(totalSource),
+          }),
+          loaded: scanned,
+          total: totalSource,
+        });
+        await yieldToUI();
+      }
+    }
+    filtered = next;
+
+    if (ensureResult.failedBatches > 0) {
+      finalizeDiffProgress(
+        token,
+        I18n.t("search.diffProgressPartial", {
+          failed: App.formatNumber(ensureResult.failedBatches),
+        }),
+        totalSource,
+        totalSource
+      );
+    } else {
+      finalizeDiffProgress(
+        token,
+        I18n.t("search.diffProgressDone", {
+          count: App.formatNumber(ensureResult.total),
+        }),
+        totalSource,
+        totalSource
+      );
+    }
+  } else {
+    if (token >= diffProgressToken) {
+      diffProgressToken = token;
+      setDiffProgressState({
+        token,
+        visible: false,
+        text: I18n.t("search.diffProgressIdle"),
+        loaded: 0,
+        total: 0,
+      });
+    }
   }
 
   if (token !== diffFilterToken) {

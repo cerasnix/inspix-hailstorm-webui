@@ -153,6 +153,26 @@
         </div>
       </div>
     </div>
+    <div id="diffProgress" class="search-diff-progress d-none" aria-live="polite">
+      <div class="search-diff-progress-head">
+        <span id="diffProgressText" class="text-muted" data-i18n="search.diffProgressIdle">
+          Diff idle.
+        </span>
+        <span id="diffProgressRatio" class="text-muted">0 / 0</span>
+      </div>
+      <div class="progress search-diff-progress-track">
+        <div
+          id="diffProgressFill"
+          class="progress-bar"
+          role="progressbar"
+          style="width: 0%"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        ></div>
+      </div>
+    </div>
+    <div id="diffSummaryText" class="search-diff-summary text-muted"></div>
     <div id="searchResults" class="result-grid"></div>
     <div id="pagination" class="pagination-shell"></div>
   </section>
