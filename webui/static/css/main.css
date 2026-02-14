@@ -462,6 +462,39 @@ body {
   overflow-wrap: anywhere;
 }
 
+.entry-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+}
+
+.entry-title-row .entry-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.entry-title-hints {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.entry-title-hint {
+  border: 1px solid rgba(33, 93, 111, 0.28);
+  border-radius: 999px;
+  background: rgba(33, 93, 111, 0.1);
+  color: var(--accent-2);
+  font-size: 0.68rem;
+  line-height: 1.2;
+  padding: 0.12rem 0.42rem;
+  white-space: nowrap;
+}
+
 .entry-meta {
   color: var(--muted);
   font-size: 0.85rem;
@@ -472,6 +505,18 @@ body {
 .result-grid.list-view .entry-title {
   grid-column: 1;
   margin-bottom: 0;
+}
+
+.result-grid.list-view .entry-title-row {
+  grid-column: 1;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.result-grid.list-view .entry-title-hints {
+  max-width: 50%;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .result-grid.list-view .entry-meta {
@@ -1891,6 +1936,7 @@ body {
   }
 
   .result-grid.list-view .entry-title,
+  .result-grid.list-view .entry-title-row,
   .result-grid.list-view .entry-meta,
   .result-grid.list-view .entry-meta-secondary,
   .result-grid.list-view .entry-footer {
@@ -2248,6 +2294,7 @@ body {
 }
 
 .result-grid.list-view .entry-title,
+.result-grid.list-view .entry-title-row,
 .result-grid.list-view .entry-meta,
 .result-grid.list-view .entry-meta-secondary {
   white-space: nowrap;
@@ -2259,6 +2306,12 @@ body {
 .result-grid.list-view .entry-title {
   font-size: 0.86rem;
   line-height: 1.2;
+}
+
+.result-grid.list-view .entry-title-hint {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .result-grid.list-view .entry-meta {
@@ -2423,6 +2476,7 @@ body {
   }
 
   .result-grid.list-view .entry-title,
+  .result-grid.list-view .entry-title-row,
   .result-grid.list-view .entry-meta,
   .result-grid.list-view .entry-meta-secondary,
   .result-grid.list-view .entry-footer {

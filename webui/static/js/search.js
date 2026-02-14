@@ -109,9 +109,21 @@ let costumeModelHints = {};
 let musicMetaByMusicId = {};
 let musicMetaBySoundId = {};
 let mediaMetaByLabel = {};
+let liveItemHintsById = {};
+let livePropHintsById = {};
+let liveLocationHintsById = {};
+let liveStageHintsById = {};
+let liveStageHintsByBackgroundId = {};
+let advDataHintsById = {};
+let advDataHintsByScriptId = {};
 
 const bgmSoundIdLabelRE = /^bgm_(?:live|preview)_(\d+)\.(?:acb|awb)$/i;
 const lyricVideoMusicIdLabelRE = /^music_lyric_video_(\d+)\.usm$/i;
+const stageLabelRE = /^3d_stage_(\d{1,6})(?:_[a-z0-9]+)*$/i;
+const stageImageBackgroundLabelRE =
+  /^live_stage_image(?:_short)?_(\d{5,8})(?:\.[a-z0-9]+)?$/i;
+const advStoryScriptLabelRE = /^story_(?:main|thumbnail)_(\d{6,10})(?:\.[a-z0-9]+)?$/i;
+const advVoiceScriptLabelRE = /^vo_adv_(\d{6,10})(?:\.[a-z0-9]+)?$/i;
 const videoSourceLabelKeys = {
   advDigest: "search.videoSource.advDigest",
   tutorial: "search.videoSource.tutorial",
@@ -135,6 +147,7 @@ const namingPrefixHints = {
   vo: "Voice",
   se: "SFX",
   story: "Story",
+  live: "Live",
   quest: "Quest",
   mot: "Motion",
   ui: "UI",
@@ -358,12 +371,26 @@ function entryTraits(entry) {
     prefix: detectNamingPrefix(normalized),
     isCostume: false,
     digits: "",
+    assetNumericId: "",
     seriesCode: "",
     characterCode: "",
     characterKey: "",
     characterName: "",
     variantCode: "",
     modelLabel: "",
+    itemLabel: "",
+    itemBindBoneId: "",
+    itemPoseId: "",
+    propLabel: "",
+    stageLocationId: "",
+    stageLocationPropsIds: [],
+    stageBackgroundId: "",
+    stageLabel: "",
+    stageAliases: [],
+    advId: "",
+    advScriptId: "",
+    advTitle: "",
+    advSubTitle: "",
     musicId: "",
     soundId: "",
     songTitle: "",
@@ -378,13 +405,15 @@ function entryTraits(entry) {
   if (costumeMatch) {
     traits.isCostume = true;
     traits.digits = costumeMatch[1];
+    traits.assetNumericId = toIntString(traits.digits);
     traits.seriesCode = traits.digits.slice(0, 4);
     traits.characterCode = inferCharacterCode(traits.digits);
     traits.variantCode = inferVariantCode(traits.digits);
   } else {
-    const genericDigits = normalized.match(/^3d_[a-z0-9]+_(\d{6,10})$/);
+    const genericDigits = normalized.match(/^3d_[a-z0-9]+_(\d{6,10})(?:_[a-z0-9]+)*$/);
     if (genericDigits) {
       traits.digits = genericDigits[1];
+      traits.assetNumericId = toIntString(traits.digits);
       traits.characterCode = inferCharacterCode(traits.digits);
       if (
         traits.prefix === "3d_face" ||
@@ -393,6 +422,152 @@ function entryTraits(entry) {
       ) {
         traits.variantCode = inferVariantCode(traits.digits);
       }
+    }
+  }
+
+  if (traits.prefix === "3d_item") {
+    const itemMatch = normalized.match(/^3d_item_(\d{3,10})(?:_[a-z0-9]+)*$/);
+    if (itemMatch) {
+      const itemId = toIntString(itemMatch[1]);
+      if (itemId) {
+        traits.assetNumericId = itemId;
+        const itemHint = liveItemHintsById[itemId];
+        if (itemHint) {
+          traits.itemLabel = String(itemHint.label || "").trim();
+          traits.itemBindBoneId = String(itemHint.bindBoneId || "").trim();
+          traits.itemPoseId = String(itemHint.poseId || "").trim();
+        }
+      }
+    }
+  }
+
+  if (traits.prefix === "3d_prop") {
+    const propMatch = normalized.match(/^3d_prop_(\d{1,6})(?:_[a-z0-9]+)*$/);
+    if (propMatch) {
+      const propId = toIntString(propMatch[1]);
+      if (propId) {
+        traits.assetNumericId = propId;
+        const propHint = livePropHintsById[propId];
+        if (propHint) {
+          traits.propLabel = String(propHint.label || "").trim();
+        }
+      }
+    }
+  }
+
+  if (traits.prefix === "3d_stage") {
+    const stageMatch = normalized.match(stageLabelRE);
+    if (stageMatch) {
+      const locationId = toIntString(stageMatch[1]);
+      if (locationId) {
+        traits.stageLocationId = locationId;
+        if (!traits.assetNumericId) {
+          traits.assetNumericId = locationId;
+        }
+        const locationHint = liveLocationHintsById[locationId];
+        if (locationHint) {
+          traits.stageLabel = String(locationHint.label || "").trim();
+          if (Array.isArray(locationHint.propsIds) && locationHint.propsIds.length) {
+            traits.stageLocationPropsIds = locationHint.propsIds.slice();
+          }
+          if (Array.isArray(locationHint.aliases) && locationHint.aliases.length) {
+            traits.stageAliases = locationHint.aliases.slice();
+          }
+        }
+      }
+    }
+  }
+
+  const stageImageMatch = normalized.match(stageImageBackgroundLabelRE);
+  if (stageImageMatch) {
+    const backgroundId = toIntString(stageImageMatch[1]);
+    if (backgroundId) {
+      traits.stageBackgroundId = backgroundId;
+      if (!traits.assetNumericId) {
+        traits.assetNumericId = backgroundId;
+      }
+      const backgroundHint = liveStageHintsByBackgroundId[backgroundId];
+      if (backgroundHint) {
+        const stageAliasSet = new Set(traits.stageAliases || []);
+        const primaryName = String(backgroundHint.primaryName || "").trim();
+        if (primaryName) {
+          stageAliasSet.add(primaryName);
+          if (!traits.stageLabel) {
+            traits.stageLabel = primaryName;
+          }
+        }
+        if (Array.isArray(backgroundHint.names)) {
+          backgroundHint.names.forEach((name) => {
+            const text = String(name || "").trim();
+            if (text) {
+              stageAliasSet.add(text);
+            }
+          });
+        }
+        if (Array.isArray(backgroundHint.descriptions)) {
+          backgroundHint.descriptions.forEach((description) => {
+            const text = String(description || "").trim();
+            if (text) {
+              stageAliasSet.add(text);
+            }
+          });
+        }
+        if (Array.isArray(backgroundHint.stageIds)) {
+          backgroundHint.stageIds.forEach((stageId) => {
+            const id = String(stageId || "").trim();
+            if (id) {
+              stageAliasSet.add(`stage ${id}`);
+            }
+          });
+        }
+        traits.stageAliases = Array.from(stageAliasSet);
+      }
+    }
+  }
+
+  const advScriptMatch =
+    normalized.match(advStoryScriptLabelRE) || normalized.match(advVoiceScriptLabelRE);
+  if (advScriptMatch) {
+    const scriptId = toIntString(advScriptMatch[1]);
+    if (scriptId) {
+      traits.advScriptId = scriptId;
+      if (!traits.assetNumericId) {
+        traits.assetNumericId = scriptId;
+      }
+      let advHint = advDataHintsByScriptId[scriptId] || null;
+      if (!advHint && advDataHintsById[scriptId]) {
+        advHint = advDataHintsById[scriptId];
+      }
+      if (!advHint && scriptId.length >= 2 && scriptId.endsWith("00")) {
+        const fallbackScriptId = `${scriptId.slice(0, -2)}01`;
+        advHint = advDataHintsByScriptId[fallbackScriptId] || null;
+      }
+      if (advHint) {
+        traits.advId = String(advHint.id || "").trim();
+        traits.advTitle = String(advHint.name || advHint.title || "").trim();
+        traits.advSubTitle = String(advHint.subTitle || "").trim();
+      }
+    }
+  }
+
+  if (Array.isArray(traits.stageAliases) && traits.stageAliases.length) {
+    const dedupedStageAliases = [];
+    const seenStageAliases = new Set();
+    traits.stageAliases.forEach((value) => {
+      const text = String(value || "").trim();
+      if (!text) {
+        return;
+      }
+      const key = text.toLowerCase();
+      if (seenStageAliases.has(key)) {
+        return;
+      }
+      seenStageAliases.add(key);
+      dedupedStageAliases.push(text);
+    });
+    traits.stageAliases = dedupedStageAliases;
+    if (!traits.stageLabel && dedupedStageAliases.length) {
+      traits.stageLabel = dedupedStageAliases[0];
     }
   }
 
@@ -470,6 +645,37 @@ function entrySearchText(entry) {
       parts.push(`variant${traits.variantCode}`);
       parts.push(traits.variantCode);
     }
+    if (traits.stageLocationId) {
+      parts.push(traits.stageLocationId);
+      parts.push(`location ${traits.stageLocationId}`);
+    }
+    if (traits.stageBackgroundId) {
+      parts.push(traits.stageBackgroundId);
+      parts.push(`background ${traits.stageBackgroundId}`);
+    }
+    if (traits.stageLabel) {
+      parts.push(traits.stageLabel);
+    }
+    if (Array.isArray(traits.stageAliases) && traits.stageAliases.length) {
+      parts.push(traits.stageAliases.join(" "));
+    }
+    if (Array.isArray(traits.stageLocationPropsIds) && traits.stageLocationPropsIds.length) {
+      parts.push(`props ${traits.stageLocationPropsIds.join(" ")}`);
+    }
+    if (traits.advId) {
+      parts.push(traits.advId);
+      parts.push(`adv ${traits.advId}`);
+    }
+    if (traits.advScriptId) {
+      parts.push(traits.advScriptId);
+      parts.push(`script ${traits.advScriptId}`);
+    }
+    if (traits.advTitle) {
+      parts.push(traits.advTitle);
+    }
+    if (traits.advSubTitle) {
+      parts.push(traits.advSubTitle);
+    }
     if (traits.musicId) {
       parts.push(traits.musicId);
     }
@@ -494,6 +700,21 @@ function entrySearchText(entry) {
     }
     if (Array.isArray(traits.videoAliases) && traits.videoAliases.length) {
       parts.push(traits.videoAliases.join(" "));
+    }
+    if (traits.assetNumericId) {
+      parts.push(traits.assetNumericId);
+    }
+    if (traits.itemLabel) {
+      parts.push(traits.itemLabel);
+    }
+    if (traits.itemBindBoneId) {
+      parts.push(`bone ${traits.itemBindBoneId}`);
+    }
+    if (traits.itemPoseId) {
+      parts.push(`pose ${traits.itemPoseId}`);
+    }
+    if (traits.propLabel) {
+      parts.push(traits.propLabel);
     }
     if (traits.modelLabel) {
       parts.push(traits.modelLabel);
@@ -848,6 +1069,21 @@ function loadCostumeSeriesHints() {
     fetch("/api/masterdata/file?name=LiveMusic")
       .then((res) => (res.ok ? res.text() : ""))
       .catch(() => ""),
+    fetch("/api/masterdata/file?name=LiveItems")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=LiveProps")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=LiveLocations")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=LiveStages")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
+    fetch("/api/masterdata/file?name=AdvDatas")
+      .then((res) => (res.ok ? res.text() : ""))
+      .catch(() => ""),
     fetch("/api/masterdata/file?name=AdvStoryDigestMovies")
       .then((res) => (res.ok ? res.text() : ""))
       .catch(() => ""),
@@ -880,6 +1116,11 @@ function loadCostumeSeriesHints() {
         charactersText,
         musicsText,
         liveMusicText,
+        liveItemsText,
+        livePropsText,
+        liveLocationsText,
+        liveStagesText,
+        advDatasText,
         advStoryDigestMoviesText,
         tutorialSchoolIdolStageMoviesText,
         memberMoviesText,
@@ -931,6 +1172,159 @@ function loadCostumeSeriesHints() {
           }
         });
       }
+
+      const nextLiveItemHintsById = {};
+      if (liveItemsText) {
+        parseSimpleYamlList(liveItemsText).forEach((row) => {
+          const id = toIntString(row.Id);
+          if (!id) {
+            return;
+          }
+          nextLiveItemHintsById[id] = {
+            id,
+            label: String(row.Label || "").trim(),
+            bindBoneId: toIntString(row.BindBoneId),
+            poseId: toIntString(row.PosesId),
+          };
+        });
+      }
+      liveItemHintsById = nextLiveItemHintsById;
+
+      const nextLivePropHintsById = {};
+      if (livePropsText) {
+        parseSimpleYamlList(livePropsText).forEach((row) => {
+          const id = toIntString(row.Id);
+          if (!id) {
+            return;
+          }
+          nextLivePropHintsById[id] = {
+            id,
+            label: String(row.Label || "").trim(),
+          };
+        });
+      }
+      livePropHintsById = nextLivePropHintsById;
+
+      const parseCsvIds = (raw) =>
+        String(raw || "")
+          .split(",")
+          .map((value) => toIntString(value))
+          .filter(Boolean);
+
+      const nextLiveLocationHintsById = {};
+      if (liveLocationsText) {
+        parseSimpleYamlList(liveLocationsText).forEach((row) => {
+          const id = toIntString(row.Id);
+          if (!id) {
+            return;
+          }
+          const label = String(row.Label || "").trim();
+          const propsIds = parseCsvIds(row.PropsIds);
+          const aliases = [label, `location ${id}`];
+          if (propsIds.length) {
+            aliases.push(`props ${propsIds.join(" ")}`);
+          }
+          nextLiveLocationHintsById[id] = {
+            id,
+            label,
+            propsIds,
+            aliases: aliases.filter(Boolean),
+          };
+        });
+      }
+      liveLocationHintsById = nextLiveLocationHintsById;
+
+      const nextLiveStageHintsById = {};
+      const nextLiveStageHintsByBackgroundId = {};
+      const pushUniqueText = (target, value) => {
+        const text = String(value || "").trim();
+        if (!text) {
+          return;
+        }
+        if (!target.includes(text)) {
+          target.push(text);
+        }
+      };
+      if (liveStagesText) {
+        parseSimpleYamlList(liveStagesText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const backgroundId = toIntString(row.BackGroundId);
+          const name = String(row.Name || "").trim();
+          const description = String(row.Description || "").trim();
+          if (!id) {
+            return;
+          }
+          const stageHint = {
+            id,
+            backgroundId,
+            name,
+            description,
+          };
+          nextLiveStageHintsById[id] = stageHint;
+          if (!backgroundId) {
+            return;
+          }
+          const backgroundHint = nextLiveStageHintsByBackgroundId[backgroundId] || {
+            backgroundId,
+            stageIds: [],
+            names: [],
+            descriptions: [],
+            primaryName: "",
+          };
+          pushUniqueText(backgroundHint.stageIds, id);
+          pushUniqueText(backgroundHint.names, name);
+          pushUniqueText(backgroundHint.descriptions, description);
+          if ((!backgroundHint.primaryName || backgroundHint.primaryName === "") && name) {
+            backgroundHint.primaryName = name;
+          }
+          if (id === backgroundId && name) {
+            backgroundHint.primaryName = name;
+          }
+          nextLiveStageHintsByBackgroundId[backgroundId] = backgroundHint;
+        });
+      }
+      liveStageHintsById = nextLiveStageHintsById;
+      liveStageHintsByBackgroundId = nextLiveStageHintsByBackgroundId;
+
+      const nextAdvDataHintsById = {};
+      const nextAdvDataHintsByScriptId = {};
+      if (advDatasText) {
+        parseSimpleYamlList(advDatasText).forEach((row) => {
+          const id = toIntString(row.Id);
+          const scriptId = toIntString(row.ScriptId);
+          if (!id && !scriptId) {
+            return;
+          }
+          const name = String(row.Name || "").trim();
+          const subTitle = String(row.SubTitleName || "").trim();
+          const description = String(row.Description || "").trim();
+          const title = [name, subTitle].filter(Boolean).join(" · ");
+          const aliases = new Set([name, subTitle, description, title]);
+          if (id) {
+            aliases.add(`adv ${id}`);
+          }
+          if (scriptId) {
+            aliases.add(`script ${scriptId}`);
+          }
+          const hint = {
+            id,
+            scriptId,
+            name,
+            subTitle,
+            description,
+            title,
+            aliases: Array.from(aliases).filter(Boolean),
+          };
+          if (id) {
+            nextAdvDataHintsById[id] = hint;
+          }
+          if (scriptId) {
+            nextAdvDataHintsByScriptId[scriptId] = hint;
+          }
+        });
+      }
+      advDataHintsById = nextAdvDataHintsById;
+      advDataHintsByScriptId = nextAdvDataHintsByScriptId;
 
       const nextCostumeModelHints = {};
       if (costumeModelsText) {
@@ -1368,11 +1762,30 @@ function entryNamingSummary(entry) {
   if (traits.modelLabel) {
     parts.push(traits.modelLabel);
   }
+  if (traits.itemLabel && !parts.includes(traits.itemLabel)) {
+    parts.push(traits.itemLabel);
+  }
+  if (traits.propLabel && !parts.includes(traits.propLabel)) {
+    parts.push(traits.propLabel);
+  }
+  if (traits.stageLabel && !parts.includes(traits.stageLabel)) {
+    parts.push(traits.stageLabel);
+  } else if (!traits.stageLabel && traits.stageBackgroundId) {
+    parts.push(`Stage BG ${traits.stageBackgroundId}`);
+  }
   if (traits.characterCode) {
     parts.push(formatCodeCharacterLabel(traits.characterCode));
   }
   if (traits.variantCode) {
     parts.push(formatVariantLabel(traits.variantCode));
+  }
+  if (traits.advTitle && !parts.includes(traits.advTitle)) {
+    parts.push(traits.advTitle);
+  }
+  if (traits.advSubTitle && !parts.includes(traits.advSubTitle)) {
+    parts.push(traits.advSubTitle);
+  } else if (!traits.advTitle && traits.advId) {
+    parts.push(`ADV ${traits.advId}`);
   }
   if (traits.songTitle) {
     parts.push(traits.songTitle);
@@ -1381,6 +1794,44 @@ function entryNamingSummary(entry) {
     parts.push(traits.videoTitle);
   }
   return parts.join(" • ");
+}
+
+function escapeHtmlText(raw) {
+  return String(raw || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function entryInlineHints(entry) {
+  const traits = entryTraits(entry);
+  const candidates = [
+    traits.itemLabel,
+    traits.propLabel,
+    traits.stageLabel,
+    traits.advTitle,
+    traits.characterName,
+    traits.songTitle,
+    traits.videoTitle,
+    traits.advSubTitle,
+  ];
+  const unique = [];
+  const seen = new Set();
+  candidates.forEach((value) => {
+    const text = String(value || "").trim();
+    if (!text) {
+      return;
+    }
+    const normalized = text.toLowerCase();
+    if (seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    unique.push(text);
+  });
+  return unique.slice(0, 3);
 }
 
 function sortEntries() {
@@ -1690,8 +2141,18 @@ function renderResults() {
     if (modifiedText) {
       extraMetaParts.push(`${I18n.t("search.modifiedShort")}: ${modifiedText}`);
     }
+    const inlineHints = entryInlineHints(entry);
+    const inlineHintHtml = inlineHints.length
+      ? `<div class="entry-title-hints">${inlineHints
+          .map((hint) => `<span class="entry-title-hint">${escapeHtmlText(hint)}</span>`)
+          .join("")}</div>`
+      : "";
+    const safeLabel = escapeHtmlText(entry.label);
     card.innerHTML = `
-      <div class="entry-title">${entry.label}</div>
+      <div class="entry-title-row">
+        <div class="entry-title" title="${safeLabel}">${safeLabel}</div>
+        ${inlineHintHtml}
+      </div>
       <div class="entry-meta">${entry.type} • ${App.formatBytes(entry.size)}</div>
       ${
         extraMetaParts.length
