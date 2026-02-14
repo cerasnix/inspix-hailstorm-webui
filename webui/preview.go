@@ -23,6 +23,7 @@ import (
 
 const previewRoot = "cache/webui-preview"
 const prefabHierarchyMaxNodes = 1200
+const prefabPreviewModelItemLimit = 64
 
 type PreviewInfo struct {
 	Available   bool
@@ -62,8 +63,9 @@ type PrefabAssetGroup struct {
 }
 
 type bundleDescriptor struct {
-	BundleName   string
-	Dependencies []string
+	BundleName          string
+	Dependencies        []string
+	IsStreamedSceneData bool
 }
 
 type prefabHierarchySummary struct {
@@ -610,29 +612,35 @@ func findBundlePreview(dir string) PreviewInfo {
 func findPrefabPreview(dir string) PreviewInfo {
 	assetsDir := filepath.Join(dir, "Assets")
 	prefabHierarchyDir := filepath.Join(assetsDir, "PrefabHierarchyObject")
+	sceneHierarchyDir := filepath.Join(assetsDir, "SceneHierarchyObject")
 	bundleJSON := firstMatch(filepath.Join(assetsDir, "AssetBundle"), []string{"*.json"})
 	desc := parseBundleDescriptor(bundleJSON)
 
-	isPrefab := false
-	if info, err := os.Stat(prefabHierarchyDir); err == nil && info.IsDir() {
-		isPrefab = true
+	hierarchyDir := ""
+	if directoryExists(prefabHierarchyDir) {
+		hierarchyDir = prefabHierarchyDir
+	} else if directoryExists(sceneHierarchyDir) {
+		hierarchyDir = sceneHierarchyDir
 	}
-	if strings.HasSuffix(strings.ToLower(desc.BundleName), ".prefab") {
-		isPrefab = true
-	}
-	if !isPrefab {
+
+	bundleNameLower := strings.ToLower(strings.TrimSpace(desc.BundleName))
+	isPrefabLike := hierarchyDir != "" ||
+		strings.HasSuffix(bundleNameLower, ".prefab") ||
+		strings.HasSuffix(bundleNameLower, ".unity") ||
+		desc.IsStreamedSceneData
+	if !isPrefabLike {
 		return PreviewInfo{}
 	}
 
-	items := collectPrefabItems(dir, prefabHierarchyDir)
+	items := collectPrefabItems(dir, hierarchyDir)
 	primary, ok := pickPrimaryPreviewItem(items)
 	if !ok && len(items) == 0 {
 		items = nil
 	}
 
 	assetGroups, assetTotal := collectPrefabAssetGroups(assetsDir)
-	rootObjects := collectPrefabRootObjects(prefabHierarchyDir)
-	hierarchy := buildPrefabHierarchySummary(prefabHierarchyDir, items)
+	rootObjects := collectPrefabRootObjects(hierarchyDir)
+	hierarchy := buildPrefabHierarchySummary(hierarchyDir, items)
 	bundleName := strings.TrimSpace(desc.BundleName)
 	if bundleName == "" {
 		bundleName = filepath.Base(dir)
@@ -680,6 +688,7 @@ func parseBundleDescriptor(path string) bundleDescriptor {
 	depSeen := map[string]struct{}{}
 	inDeps := false
 	name := ""
+	isStreamedSceneData := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -687,6 +696,11 @@ func parseBundleDescriptor(path string) bundleDescriptor {
 			if match := bundleNameLineRE.FindStringSubmatch(line); len(match) > 1 {
 				name = strings.TrimSpace(match[1])
 			}
+		}
+		if !isStreamedSceneData &&
+			strings.Contains(line, `"m_IsStreamedSceneAssetBundle"`) &&
+			strings.Contains(strings.ToLower(line), "true") {
+			isStreamedSceneData = true
 		}
 
 		if !inDeps {
@@ -723,9 +737,15 @@ func parseBundleDescriptor(path string) bundleDescriptor {
 		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	}
 	return bundleDescriptor{
-		BundleName:   name,
-		Dependencies: deps,
+		BundleName:          name,
+		Dependencies:        deps,
+		IsStreamedSceneData: isStreamedSceneData,
 	}
+}
+
+func directoryExists(path string) bool {
+	info, err := os.Stat(strings.TrimSpace(path))
+	return err == nil && info.IsDir()
 }
 
 func collectPrefabItems(dir string, prefabHierarchyDir string) []PreviewItem {
@@ -755,10 +775,18 @@ func collectPrefabItems(dir string, prefabHierarchyDir string) []PreviewItem {
 		items = append(items, item)
 	}
 
-	for _, path := range collectMatchesRecursiveExt(prefabHierarchyDir, []string{".glb", ".gltf"}, 8) {
+	for _, path := range collectMatchesRecursiveExt(
+		prefabHierarchyDir,
+		[]string{".glb", ".gltf"},
+		prefabPreviewModelItemLimit,
+	) {
 		addPath(path)
 	}
-	for _, path := range collectMatchesRecursiveExt(dir, []string{".glb", ".gltf"}, 8) {
+	for _, path := range collectMatchesRecursiveExt(
+		dir,
+		[]string{".glb", ".gltf"},
+		prefabPreviewModelItemLimit,
+	) {
 		addPath(path)
 	}
 	for _, path := range collectMatchesRecursiveExt(dir, []string{".png", ".jpg", ".jpeg", ".webp"}, 8) {

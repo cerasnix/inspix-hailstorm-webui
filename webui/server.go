@@ -1127,11 +1127,13 @@ func (s *Server) resolvePrefabAssembly(entry manifest.Entry, preview PreviewInfo
 
 func shouldPreparePrefabAssemblyDependency(entry manifest.Entry) bool {
 	t := strings.ToLower(strings.TrimSpace(entry.StrTypeCrc))
-	if t == "fbx" || t == "prefab" {
+	if t == "fbx" || t == "prefab" || t == "unity" {
 		return true
 	}
 	label := strings.ToLower(strings.TrimSpace(entry.StrLabelCrc))
-	return strings.HasSuffix(label, ".fbx") || strings.HasSuffix(label, ".prefab")
+	return strings.HasSuffix(label, ".fbx") ||
+		strings.HasSuffix(label, ".prefab") ||
+		strings.HasSuffix(label, ".unity")
 }
 
 func prefabAssemblyDependencyKind(entryType string, label string) string {
@@ -1139,7 +1141,12 @@ func prefabAssemblyDependencyKind(entryType string, label string) string {
 	l := strings.ToLower(strings.TrimSpace(label))
 
 	switch {
-	case t == "fbx" || t == "prefab" || strings.HasSuffix(l, ".fbx") || strings.HasSuffix(l, ".prefab"):
+	case t == "fbx" ||
+		t == "prefab" ||
+		t == "unity" ||
+		strings.HasSuffix(l, ".fbx") ||
+		strings.HasSuffix(l, ".prefab") ||
+		strings.HasSuffix(l, ".unity"):
 		return "model"
 	case t == "mat" || strings.HasSuffix(l, ".mat"):
 		return "material"
@@ -1173,22 +1180,41 @@ func prefabAssemblyDependencyKind(entryType string, label string) string {
 func prefabAssemblyTextureRole(label string) string {
 	l := strings.ToLower(strings.TrimSpace(label))
 	switch {
-	case strings.Contains(l, "controlmap"):
+	case strings.Contains(l, "controlmap"),
+		strings.Contains(l, "probemap"),
+		strings.Contains(l, "lightmap"),
+		strings.Contains(l, "_dlm"),
+		strings.Contains(l, "_lm"),
+		strings.Contains(l, "metallic"),
+		strings.Contains(l, "metall"),
+		strings.Contains(l, "roughness"),
+		strings.Contains(l, "specular"),
+		strings.Contains(l, "ao"):
 		return "control"
-	case strings.Contains(l, "normal"):
+	case strings.Contains(l, "normal"),
+		strings.Contains(l, "_nml"),
+		strings.Contains(l, "_nrm"),
+		strings.Contains(l, "_nm"):
 		return "normal"
-	case strings.Contains(l, "mask"):
+	case strings.Contains(l, "mask"),
+		strings.Contains(l, "alpha"),
+		strings.Contains(l, "cutout"):
 		return "mask"
 	case strings.Contains(l, "highlight"):
 		return "highlight"
 	case strings.Contains(l, "lens"):
 		return "lens"
-	case strings.Contains(l, "col0") || strings.Contains(l, "albedo") || strings.Contains(l, "diffuse"):
-		return "albedo"
 	case strings.Contains(l, "col1"):
 		return "detail"
 	case strings.Contains(l, "col2"):
 		return "detail2"
+	case strings.Contains(l, "col0"),
+		strings.Contains(l, "albedo"),
+		strings.Contains(l, "diffuse"),
+		strings.Contains(l, "basecolor"),
+		strings.Contains(l, "_bc"),
+		strings.Contains(l, "_col"):
+		return "albedo"
 	default:
 		return "other"
 	}

@@ -331,6 +331,15 @@ window.I18n = (() => {
         "{{count}} texture dependency item(s) are missing locally.",
       "view.prefabAssemblyTexturePending":
         "{{count}} texture dependency item(s) are waiting for preview export.",
+      "view.prefabAssemblyTextureControlAuto": "Texture: Auto (smart match)",
+      "view.prefabAssemblyTextureControlNone": "Texture: No match",
+      "view.prefabAssemblyTextureGroup": "Texture group",
+      "view.prefabAssemblyLinkTextureGroup": "Apply texture selection to group",
+      "view.prefabAssemblyTextureStateAuto": "Texture: auto",
+      "view.prefabAssemblyTextureStateNone": "Texture: no match",
+      "view.prefabAssemblyTextureStatePartial":
+        "Texture: partial {{matched}}/{{total}}",
+      "view.prefabAssemblyTextureStateManual": "Texture: manual {{label}}",
       "view.prefabAssemblyShowDuplicates": "Show size-duplicate components",
       "view.prefabAssemblyDuplicateBySize":
         "Auto-hidden {{count}} component(s) with identical file size.",
@@ -338,6 +347,33 @@ window.I18n = (() => {
         "Showing {{count}} component(s) previously auto-hidden by identical file size.",
       "view.prefabAssemblyDuplicateItem":
         "Size-duplicate candidate · {{size}}",
+      "view.prefabAssemblyLocatorItem":
+        "Auto-hidden tiny locator candidate · {{size}} · {{triangles}} tri",
+      "view.prefabAssemblyMappingSaveButton": "Save texture mapping",
+      "view.prefabAssemblyMappingClearButton": "Clear texture mapping",
+      "view.prefabAssemblyMappingDirty":
+        "Manual texture mapping has unsaved changes.",
+      "view.prefabAssemblyMappingLoaded":
+        "Restored {{count}} manual texture mapping(s).",
+      "view.prefabAssemblyMappingLoadedWithMissing":
+        "Restored {{count}} manual mapping(s); {{missing}} unavailable and set to no-match.",
+      "view.prefabAssemblyMappingLoadedMissingOnly":
+        "{{count}} saved mapping(s) are unavailable and set to no-match.",
+      "view.prefabAssemblyMappingSaved":
+        "Saved {{count}} manual texture mapping(s).",
+      "view.prefabAssemblyMappingCleared":
+        "Cleared manual texture mapping.",
+      "view.prefabAssemblyMappingSaveFailed":
+        "Failed to save texture mapping.",
+      "view.prefabAssemblyMappingClearFailed":
+        "Failed to clear texture mapping.",
+      "view.prefabAssemblyLayoutWidth": "Selector width: {{value}}px",
+      "view.prefabAssemblyLayoutHeight": "Selector height: {{value}}px",
+      "view.prefabAssemblyLayoutColumns": "Selector columns",
+      "view.prefabAssemblyLayoutColumnsAuto": "Auto",
+      "view.prefabAssemblyLayoutColumns1": "1 column",
+      "view.prefabAssemblyLayoutColumns2": "2 columns",
+      "view.prefabAssemblyLayoutColumns3": "3 columns",
       "view.prefabPoseLabel": "Pose preset",
       "view.prefabPoseApply": "Apply pose",
       "view.prefabPoseReset": "Reset pose",
@@ -736,6 +772,15 @@ window.I18n = (() => {
         "有 {{count}} 个贴图依赖项未在本地找到。",
       "view.prefabAssemblyTexturePending":
         "有 {{count}} 个贴图依赖项尚未导出预览，将自动准备。",
+      "view.prefabAssemblyTextureControlAuto": "贴图：自动（智能匹配）",
+      "view.prefabAssemblyTextureControlNone": "贴图：无匹配",
+      "view.prefabAssemblyTextureGroup": "贴图分组",
+      "view.prefabAssemblyLinkTextureGroup": "按组联动贴图选择",
+      "view.prefabAssemblyTextureStateAuto": "贴图：自动",
+      "view.prefabAssemblyTextureStateNone": "贴图：无匹配",
+      "view.prefabAssemblyTextureStatePartial":
+        "贴图：部分匹配 {{matched}}/{{total}}",
+      "view.prefabAssemblyTextureStateManual": "贴图：手动 {{label}}",
       "view.prefabAssemblyShowDuplicates": "显示同体积重复组件",
       "view.prefabAssemblyDuplicateBySize":
         "已自动隐藏 {{count}} 个文件大小完全相同的组件。",
@@ -743,6 +788,33 @@ window.I18n = (() => {
         "正在显示 {{count}} 个因文件大小相同而自动折叠的组件。",
       "view.prefabAssemblyDuplicateItem":
         "疑似重复（同体积）· {{size}}",
+      "view.prefabAssemblyLocatorItem":
+        "自动隐藏：疑似定位器微小模型 · {{size}} · {{triangles}} 面",
+      "view.prefabAssemblyMappingSaveButton": "保存贴图映射",
+      "view.prefabAssemblyMappingClearButton": "清空贴图映射",
+      "view.prefabAssemblyMappingDirty":
+        "手动贴图映射有未保存变更。",
+      "view.prefabAssemblyMappingLoaded":
+        "已恢复 {{count}} 条手动贴图映射。",
+      "view.prefabAssemblyMappingLoadedWithMissing":
+        "已恢复 {{count}} 条映射；{{missing}} 条不可用并设为无匹配。",
+      "view.prefabAssemblyMappingLoadedMissingOnly":
+        "有 {{count}} 条已保存映射不可用，已设为无匹配。",
+      "view.prefabAssemblyMappingSaved":
+        "已保存 {{count}} 条手动贴图映射。",
+      "view.prefabAssemblyMappingCleared":
+        "已清空手动贴图映射。",
+      "view.prefabAssemblyMappingSaveFailed":
+        "保存贴图映射失败。",
+      "view.prefabAssemblyMappingClearFailed":
+        "清空贴图映射失败。",
+      "view.prefabAssemblyLayoutWidth": "选择器宽度：{{value}}px",
+      "view.prefabAssemblyLayoutHeight": "选择器高度：{{value}}px",
+      "view.prefabAssemblyLayoutColumns": "选择器列数",
+      "view.prefabAssemblyLayoutColumnsAuto": "自动",
+      "view.prefabAssemblyLayoutColumns1": "1 列",
+      "view.prefabAssemblyLayoutColumns2": "2 列",
+      "view.prefabAssemblyLayoutColumns3": "3 列",
       "view.prefabPoseLabel": "姿势预设",
       "view.prefabPoseApply": "应用姿势",
       "view.prefabPoseReset": "重置姿势",
@@ -1147,6 +1219,15 @@ window.I18n = (() => {
         "ローカルに存在しないテクスチャ依存が {{count}} 件あります。",
       "view.prefabAssemblyTexturePending":
         "{{count}} 件のテクスチャ依存はプレビュー書き出し待ちです。",
+      "view.prefabAssemblyTextureControlAuto": "テクスチャ: 自動 (スマート一致)",
+      "view.prefabAssemblyTextureControlNone": "テクスチャ: 一致なし",
+      "view.prefabAssemblyTextureGroup": "テクスチャグループ",
+      "view.prefabAssemblyLinkTextureGroup": "テクスチャ選択をグループ連動",
+      "view.prefabAssemblyTextureStateAuto": "テクスチャ: 自動",
+      "view.prefabAssemblyTextureStateNone": "テクスチャ: 一致なし",
+      "view.prefabAssemblyTextureStatePartial":
+        "テクスチャ: 部分一致 {{matched}}/{{total}}",
+      "view.prefabAssemblyTextureStateManual": "テクスチャ: 手動 {{label}}",
       "view.prefabAssemblyShowDuplicates": "同サイズ重複コンポーネントを表示",
       "view.prefabAssemblyDuplicateBySize":
         "同一ファイルサイズのコンポーネント {{count}} 件を自動で非表示にしました。",
@@ -1154,6 +1235,33 @@ window.I18n = (() => {
         "同一ファイルサイズで自動非表示だったコンポーネント {{count}} 件を表示中です。",
       "view.prefabAssemblyDuplicateItem":
         "重複候補（同サイズ）・{{size}}",
+      "view.prefabAssemblyLocatorItem":
+        "自動非表示: 微小ロケータ候補 · {{size}} · {{triangles}} 面",
+      "view.prefabAssemblyMappingSaveButton": "テクスチャ対応を保存",
+      "view.prefabAssemblyMappingClearButton": "テクスチャ対応をクリア",
+      "view.prefabAssemblyMappingDirty":
+        "手動テクスチャ対応に未保存の変更があります。",
+      "view.prefabAssemblyMappingLoaded":
+        "{{count}} 件の手動テクスチャ対応を復元しました。",
+      "view.prefabAssemblyMappingLoadedWithMissing":
+        "{{count}} 件を復元し、{{missing}} 件は未利用のため一致なしに設定しました。",
+      "view.prefabAssemblyMappingLoadedMissingOnly":
+        "保存済み {{count}} 件が利用不可のため一致なしに設定しました。",
+      "view.prefabAssemblyMappingSaved":
+        "{{count}} 件の手動テクスチャ対応を保存しました。",
+      "view.prefabAssemblyMappingCleared":
+        "手動テクスチャ対応をクリアしました。",
+      "view.prefabAssemblyMappingSaveFailed":
+        "テクスチャ対応の保存に失敗しました。",
+      "view.prefabAssemblyMappingClearFailed":
+        "テクスチャ対応のクリアに失敗しました。",
+      "view.prefabAssemblyLayoutWidth": "セレクター幅: {{value}}px",
+      "view.prefabAssemblyLayoutHeight": "セレクター高さ: {{value}}px",
+      "view.prefabAssemblyLayoutColumns": "セレクター列数",
+      "view.prefabAssemblyLayoutColumnsAuto": "自動",
+      "view.prefabAssemblyLayoutColumns1": "1 列",
+      "view.prefabAssemblyLayoutColumns2": "2 列",
+      "view.prefabAssemblyLayoutColumns3": "3 列",
       "view.prefabPoseLabel": "ポーズプリセット",
       "view.prefabPoseApply": "ポーズ適用",
       "view.prefabPoseReset": "ポーズをリセット",
